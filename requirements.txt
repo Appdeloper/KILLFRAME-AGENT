@@ -1,0 +1,9 @@
+yt-dlp
+librosa
+moviepy
+requests
+groq
+python-dotenv
+opencv-python
+numpy
+ffmpeg-python
