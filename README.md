@@ -110,41 +110,33 @@ An agentic pipeline that:
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Quick Demo Setup & Run
 
 ### Prerequisites
-```bash
-python 3.10+
-ffmpeg installed on system
-```
+Install Python 3.10+ and `ffmpeg` on Windows. You can install `ffmpeg` using Chocolatey or winget, or add a local ffmpeg binary to your PATH.
 
 ### Installation
-```bash
-# Clone the repo
-git clone https://github.com/YOUR_USERNAME/KILLFRAME-AGENT.git
-cd KILLFRAME-AGENT
-
-# Install dependencies
+```powershell
+git clone https://github.com/Appdeloper/KILLFRAME-AGENT.git
+cd "KILLFRAME AGENT"
 pip install -r requirements.txt
 ```
 
-### Set Up Your Free Groq API Key
-1. Go to [console.groq.com](https://console.groq.com)
-2. Create a free account
-3. Generate an API key
-4. Create a `.env` file:
+### Configure Environment
+Create a `.env` file in the repo root with your Groq API key:
+
 ```
 GROQ_API_KEY=your_key_here
 ```
 
-### Run The Agent
-```bash
-python agent.py \
-  --youtube "https://youtube.com/@CreatorChannelURL" \
-  --footage "./my_gameplay_clips/" \
-  --music "./track.mp3" \
-  --output "./killframe_montage.mp4"
+### Run a Quick Demo
+This repository includes a one-click demo script for judges.
+
+```powershell
+python demo.py --youtube "https://www.youtube.com/@RuokFF" --footage "./test_footage" --music "./test_music.mp3" --output "./demo_montage.mp4"
 ```
+
+Or double-click `demo.bat` on Windows.
 
 ---
 
