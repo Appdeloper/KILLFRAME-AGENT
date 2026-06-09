@@ -30,7 +30,7 @@ def main():
         clips = select_clips(args.footage, style_profile)
         print(f"  Selected {len(clips)} clips")
         print("\n[KILLFRAME] Step 4/4 - Editing final montage...")
-        edit_video(clips, beat_timeline, args.output, style_profile, args.music)
+        edit_video(clips, beat_timeline, args.output, style_profile)
         print(f"\n[KILLFRAME] Montage exported to {args.output}")
         print("="*50)
     except Exception as e:

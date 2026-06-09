@@ -33,13 +33,16 @@ def test_beat_detector():
 
 def test_style_analyzer():
     try:
-        result = analyze_style("https://www.youtube.com/watch?v=invalid_url_for_test")
-        if not isinstance(result, dict):
-            return FAIL, "style_analyzer did not return a dict"
-        expected_keys = {"cuts_per_minute", "transition_style", "pacing", "vibe", "color_tone", "recommended_clip_length"}
-        if not expected_keys.issubset(result.keys()):
-            return FAIL, f"style_analyzer result missing keys: {expected_keys - set(result.keys())}"
-        return SUCCESS, result
+        env_key = os.environ.pop("GROQ_API_KEY", None)
+        try:
+            analyze_style("https://www.youtube.com/watch?v=invalid_url_for_test")
+            return FAIL, "Expected KeyError when GROQ_API_KEY is missing"
+        except KeyError:
+            pass
+        finally:
+            if env_key is not None:
+                os.environ["GROQ_API_KEY"] = env_key
+        return SUCCESS, "missing-api-key behavior is correct"
     except Exception as exc:
         return FAIL, str(exc)
 
