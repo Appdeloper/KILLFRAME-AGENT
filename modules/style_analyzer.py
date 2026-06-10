@@ -102,7 +102,20 @@ def analyze_style(youtube_url):
     if not api_key:
         api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        raise KeyError("GEMINI_API_KEY is required for style analysis")
+        logger.warning("GEMINI_API_KEY not found in environment. Using default style profile fallback.")
+        default_profile = {
+            "cuts_per_minute": 12.0,
+            "transition_style": "cut",
+            "pacing": "fast",
+            "vibe": "intense",
+            "color_tone": "dark and saturated",
+            "recommended_clip_length": 2.5,
+            "average_cut_pace_seconds": 5.0,
+            "intensity_preference": "fast",
+            "visual_triggers": ["intense"]
+        }
+        logger.info("Style analysis complete (fallback): %s", default_profile)
+        return default_profile
 
     logger.info("Configuring Gemini API key and model")
     genai.configure(api_key=api_key)
