@@ -192,7 +192,7 @@ def select_clips(footage_folder, style_profile):
             # Automatic kill threshold check
             if motion_score > threshold_val and t >= cooldown_until:
                 timestamp_str = f"{int(t)//60}:{int(t)%60:02d}"
-                print(f"[KILLFRAME] Found kill at {timestamp_str} — motion score: {motion_score:.1f}")
+                print(f"[KILLFRAME] Found kill at {timestamp_str} - motion score: {motion_score:.1f}")
                 detected_candidates.append({
                     "timestamp": t,
                     "score": kill_score
@@ -270,14 +270,14 @@ def select_clips(footage_folder, style_profile):
         selected_kills = [15.0 + i * step for i in range(clips_needed)]
         avg_kill_score = 50.0
 
-    # STEP 8 — Final summary
-    print("[KILLFRAME] ═══════════════════════════════")
+    # STEP 8 - Final summary
+    print("[KILLFRAME] -------------------------------")
     print("[KILLFRAME] KILL DETECTION COMPLETE")
     print(f"[KILLFRAME] Total footage scanned: {total_minutes:.1f} minutes")
     print(f"[KILLFRAME] Kill moments detected: {len(candidates)}")
     print(f"[KILLFRAME] Clips selected: {len(selected_kills)}")
     print(f"[KILLFRAME] Average kill score: {avg_kill_score:.1f}")
-    print("[KILLFRAME] ═══════════════════════════════")
+    print("[KILLFRAME] -------------------------------")
 
     # Sort final clips by score descending
     clips_list.sort(key=lambda x: x["score"], reverse=True)
