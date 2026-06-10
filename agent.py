@@ -85,6 +85,7 @@ def main():
     parser.add_argument("--footage", required=True, help="Path to raw footage folder or file")
     parser.add_argument("--music", required=True, help="Path to background music file")
     parser.add_argument("--output", default="killframe_montage.mp4", help="Path to output final montage")
+    parser.add_argument("--duration", type=int, default=60, help="Output duration in seconds")
     args = parser.parse_args()
 
     print("=" * 55)
@@ -98,6 +99,7 @@ def main():
         t_step = time.time()
         print("\n[KILLFRAME] Step 1/4 - Analyzing creator style via Deep AI...")
         style_profile = analyze_style(args.youtube)
+        style_profile["output_duration"] = args.duration
         print(f"[KILLFRAME] Step completed in {time.time() - t_step:.1f}s")
 
         # Step 2: Beat Detection

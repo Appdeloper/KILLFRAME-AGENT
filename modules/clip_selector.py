@@ -338,13 +338,21 @@ def select_clips(footage_folder, style_profile):
         if not overlap:
             deduplicated.append(ev)
 
-    # Fallback to evenly spaced segments if less than 8 clips
-    if len(deduplicated) < 8:
-        print("[KILLFRAME] Fallback: Generating 8 evenly spaced segments...")
+    # Smart clip count based on style profile duration
+    duration_to_clips = {30: 8, 60: 15, 120: 25, 180: 35, 300: 55, 600: 100}
+    output_duration = max(60, style_profile.get("output_duration", 60))
+    clips_needed = next((v for k, v in sorted(duration_to_clips.items()) if output_duration <= k), 100)
+    if clips_needed < 15:
+        clips_needed = 15
+    print(f"[KILLFRAME] Need {clips_needed} clips for {output_duration}s montage")
+
+    # Fallback to evenly spaced segments if less than clips_needed clips
+    if len(deduplicated) < clips_needed:
+        print(f"[KILLFRAME] Fallback: Generating {clips_needed} evenly spaced segments...")
         deduplicated = []
-        step = max(4.0, (total_duration - 25.0) / 8)
-        for i in range(8):
-            start_t = 20.0 + i * step
+        step = (total_duration - 15.0) / clips_needed
+        for i in range(clips_needed):
+            start_t = 10.0 + i * step
             deduplicated.append({
                 "start": start_t,
                 "end": start_t + 2.5,
@@ -355,13 +363,8 @@ def select_clips(footage_folder, style_profile):
                 "max_motion": 10.0
             })
 
-    # Smart clip count based on style profile duration
-    duration_to_clips = {30: 8, 60: 15, 120: 25, 180: 35, 300: 55, 600: 100}
-    output_dur = style_profile.get("output_duration", 60)
-    clips_needed = next((v for k, v in sorted(duration_to_clips.items()) if output_dur <= k), 100)
-
     # Keep only the top clips needed, sorted chronologically
-    selected_events = deduplicated[:max(8, min(clips_needed, len(deduplicated)))]
+    selected_events = deduplicated[:clips_needed]
     selected_events.sort(key=lambda x: x["start"])
 
     # Extract clips using FFmpeg (attempt GPU acceleration first)

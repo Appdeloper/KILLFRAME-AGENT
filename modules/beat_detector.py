@@ -100,7 +100,7 @@ def detect_beats(music_path):
 
     # Metrics
     avg_gap = float(np.mean(np.diff(timestamps_list))) if len(timestamps_list) > 1 else 1.87
-    rec_len = avg_gap
+    rec_len = max(2.5, avg_gap)
     
     # Calculate duration string e.g. 3:24
     dur_min = int(song_duration // 60)

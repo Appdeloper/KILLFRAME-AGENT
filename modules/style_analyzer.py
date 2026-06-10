@@ -185,7 +185,26 @@ def analyze_style(youtube_url):
     print(f"[KILLFRAME] AI Provider detected: {provider.capitalize()}")
     print("[KILLFRAME] Analyzing reference style via Deep AI Style Cloning...")
 
-    default_profile = presets["ruokff"]  # RUOKFF is default profile
+    reference_profile = {
+        "cuts_per_minute": 25,
+        "avg_clip_length": 2.2,
+        "transition_style": "flash",
+        "color_grade": "bright_warm",
+        "brightness_level": 145,
+        "contrast_level": 1.15,
+        "saturation_level": 1.2,
+        "pacing": "fast",
+        "uses_slowmo": False,
+        "uses_zoom": False,
+        "uses_shake": False,
+        "uses_glitch": False,
+        "uses_chromatic": False,
+        "vibe": "hype",
+        "beat_sync_strength": "strong",
+        "recommended_clip_length": 2.2,
+        "output_duration": 60
+    }
+    default_profile = reference_profile
 
     if "dummy" in api_key.lower() or "test" in api_key.lower():
         print("[KILLFRAME] Dummy/test API key detected. Skipping YouTube download and API call, falling back to default style profile.")
