@@ -44,7 +44,7 @@ def run_pipeline(youtube, footage, music, output):
 
     print('\n[100%] Editing montage...')
     try:
-        edit_video(clips, beats, output, style)
+        edit_video(clips, beats, output, style, music)
     except Exception as e:
         print('[DEMO] Error during export:', e)
         raise
