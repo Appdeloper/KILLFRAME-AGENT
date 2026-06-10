@@ -21,17 +21,38 @@ def cinematic_grade(frame, style):
     f = np.clip((f/255.0)**0.9 * 255, 0, 255)
     # Contrast boost
     f = np.clip((f - 128) * style.get("contrast_level", 1.35) + 128, 0, 255)
-    # Saturation
+    
+    # Saturation / Color Pop
     hsv = cv2.cvtColor(f.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
-    hsv[:,:,1] = np.clip(hsv[:,:,1] * style.get("saturation_level", 1.45), 0, 255)
+    if style.get("color_grade") == "desaturated_pop":
+        # Desaturate but keep red pop (HSV red ranges)
+        mask_r1 = cv2.inRange(hsv, np.array([0, 100, 100]), np.array([12, 255, 255]))
+        mask_r2 = cv2.inRange(hsv, np.array([165, 100, 100]), np.array([180, 255, 255]))
+        mask_red = mask_r1 | mask_r2
+        hsv[:,:,1] = np.where(mask_red > 0, hsv[:,:,1] * 1.5, hsv[:,:,1] * 0.25)
+    else:
+        hsv[:,:,1] = hsv[:,:,1] * style.get("saturation_level", 1.45)
+    
+    hsv[:,:,1] = np.clip(hsv[:,:,1], 0, 255)
     f = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
+    
     # Shadow lift
     f = np.clip(f * 0.94 + 10, 0, 255)
+    
     # Vignette
-    h, w = f.shape[:2]
-    Y, X = np.ogrid[:h, :w]
-    v = 1 - 0.5*(((X-w/2)**2+(Y-h/2)**2)/((w/2)**2+(h/2)**2))
-    f = (f * np.clip(v, 0.5, 1)[:,:,np.newaxis])
+    if style.get("uses_vignette", True):
+        h, w = f.shape[:2]
+        Y, X = np.ogrid[:h, :w]
+        v = 1 - 0.5*(((X-w/2)**2+(Y-h/2)**2)/((w/2)**2+(h/2)**2))
+        f = (f * np.clip(v, 0.5, 1)[:,:,np.newaxis])
+        
+    # Letterbox black bars
+    if style.get("letterbox", False):
+        h, w = f.shape[:2]
+        bar_h = int(h * 0.1)
+        f[0:bar_h, :] = 0
+        f[h-bar_h:h, :] = 0
+        
     return f.astype(np.uint8)
 
 def chromatic_aberration(frame, intensity=2):

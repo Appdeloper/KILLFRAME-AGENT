@@ -1,0 +1,32 @@
+{
+    "https://www.youtube.com/watch?v=NwV3DjiXmms": {
+        "cuts_per_minute": 12,
+        "avg_clip_length": 2.5,
+        "shortest_clip": 1,
+        "longest_clip": 5,
+        "transition_style": "hard_cut",
+        "color_grade": "bright",
+        "brightness_level": 180,
+        "contrast_level": 1.2,
+        "saturation_level": 1.1,
+        "pacing": "fast",
+        "uses_slowmo": false,
+        "slowmo_percentage": 0,
+        "slowmo_speed": 0,
+        "uses_zoom": false,
+        "zoom_intensity": 0,
+        "uses_shake": false,
+        "shake_intensity": 0,
+        "uses_glitch": false,
+        "uses_chromatic": false,
+        "uses_vignette": false,
+        "text_style": "minimal",
+        "vibe": "energetic",
+        "beat_sync_strength": "medium",
+        "intro_style": "direct",
+        "outro_style": "fadeout",
+        "recommended_clip_length": 3,
+        "output_duration": 60,
+        "ref_bpm": 120.0
+    }
+}

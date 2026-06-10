@@ -61,6 +61,97 @@ def analyze_style(youtube_url):
     if not api_key:
         raise KeyError("GROQ_API_KEY")
 
+    presets = {
+        "ruokff": {
+            "cuts_per_minute": 35.0,
+            "avg_clip_length": 1.7,
+            "shortest_clip": 1.0,
+            "longest_clip": 2.5,
+            "transition_style": "hard_cut",
+            "color_grade": "cinematic",
+            "brightness_level": 135,
+            "contrast_level": 1.35,
+            "saturation_level": 1.45,
+            "pacing": "fast",
+            "uses_slowmo": True,
+            "slowmo_percentage": 100,
+            "slowmo_speed": 0.3,
+            "uses_zoom": False,
+            "zoom_intensity": 0.06,
+            "uses_shake": False,
+            "shake_intensity": 0.04,
+            "uses_glitch": False,
+            "uses_chromatic": False,
+            "uses_vignette": True,
+            "text_style": "minimal",
+            "vibe": "hype",
+            "beat_sync_strength": "strong",
+            "intro_style": "text",
+            "outro_style": "freeze",
+            "recommended_clip_length": 1.7,
+            "output_duration": 60
+        },
+        "white444": {
+            "cuts_per_minute": 80.0,
+            "avg_clip_length": 0.75,
+            "shortest_clip": 0.4,
+            "longest_clip": 1.2,
+            "transition_style": "flash",
+            "color_grade": "desaturated_pop",
+            "brightness_level": 128,
+            "contrast_level": 1.8,
+            "saturation_level": 0.8,
+            "pacing": "ultra_fast",
+            "uses_slowmo": False,
+            "slowmo_percentage": 0,
+            "slowmo_speed": 0.5,
+            "uses_zoom": True,
+            "zoom_intensity": 0.15,
+            "uses_shake": True,
+            "shake_intensity": 0.08,
+            "uses_glitch": True,
+            "uses_chromatic": True,
+            "uses_vignette": True,
+            "text_style": "aggressive",
+            "vibe": "hype",
+            "beat_sync_strength": "perfect",
+            "intro_style": "flash",
+            "outro_style": "freeze",
+            "recommended_clip_length": 0.75,
+            "output_duration": 60
+        },
+        "raistar": {
+            "cuts_per_minute": 22.0,
+            "avg_clip_length": 2.7,
+            "shortest_clip": 1.5,
+            "longest_clip": 4.0,
+            "transition_style": "black",
+            "color_grade": "cinematic",
+            "brightness_level": 120,
+            "contrast_level": 1.4,
+            "saturation_level": 1.3,
+            "pacing": "medium",
+            "uses_slowmo": True,
+            "slowmo_percentage": 100,
+            "slowmo_speed": 0.5,
+            "uses_zoom": True,
+            "zoom_intensity": 0.08,
+            "uses_shake": False,
+            "shake_intensity": 0.04,
+            "uses_glitch": False,
+            "uses_chromatic": False,
+            "uses_vignette": True,
+            "text_style": "cinematic",
+            "vibe": "cinematic",
+            "beat_sync_strength": "medium",
+            "intro_style": "slowmo",
+            "outro_style": "fadeout",
+            "recommended_clip_length": 2.7,
+            "output_duration": 60,
+            "letterbox": True
+        }
+    }
+
     # Load cache
     cache = load_cache()
     if youtube_url in cache:
@@ -71,40 +162,6 @@ def analyze_style(youtube_url):
             print(f"  {k}: {v}")
         return profile
 
-    provider = detect_api_provider(api_key)
-    print(f"[KILLFRAME] AI Provider detected: {provider.capitalize()}")
-    print("[KILLFRAME] Analyzing reference style via Deep AI Style Cloning...")
-
-    default_profile = {
-        "cuts_per_minute": 20.0,
-        "avg_clip_length": 2.5,
-        "shortest_clip": 1.0,
-        "longest_clip": 3.5,
-        "transition_style": "hard_cut",
-        "color_grade": "cinematic",
-        "brightness_level": 128,
-        "contrast_level": 1.35,
-        "saturation_level": 1.45,
-        "pacing": "aggressive",
-        "uses_slowmo": False,
-        "slowmo_percentage": 0,
-        "slowmo_speed": 0.5,
-        "uses_zoom": False,
-        "zoom_intensity": 0.06,
-        "uses_shake": False,
-        "shake_intensity": 0.04,
-        "uses_glitch": False,
-        "uses_chromatic": False,
-        "uses_vignette": True,
-        "text_style": "aggressive",
-        "vibe": "hype",
-        "beat_sync_strength": "strong",
-        "intro_style": "text",
-        "outro_style": "freeze",
-        "recommended_clip_length": 2.5,
-        "output_duration": 60
-    }
-
     # Compatibility keys finalize helper
     def finalize_profile(data):
         cuts = float(data.get("cuts_per_minute", 20.0))
@@ -114,6 +171,21 @@ def analyze_style(youtube_url):
         data["intensity_preference"] = str(data.get("pacing", "aggressive")).lower()
         data["visual_triggers"] = [str(data.get("vibe", "hype")).lower()]
         return data
+
+    # Check preset match
+    url_lower = youtube_url.lower()
+    for name, prof in presets.items():
+        if name in url_lower:
+            print(f"[KILLFRAME] Preset hit! Applying '{name.upper()}' style preset profile.")
+            final_p = prof.copy()
+            final_p["ref_bpm"] = 120.0
+            return finalize_profile(final_p)
+
+    provider = detect_api_provider(api_key)
+    print(f"[KILLFRAME] AI Provider detected: {provider.capitalize()}")
+    print("[KILLFRAME] Analyzing reference style via Deep AI Style Cloning...")
+
+    default_profile = presets["ruokff"]  # RUOKFF is default profile
 
     if "dummy" in api_key.lower() or "test" in api_key.lower():
         print("[KILLFRAME] Dummy/test API key detected. Skipping YouTube download and API call, falling back to default style profile.")
