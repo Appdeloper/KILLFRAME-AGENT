@@ -13,6 +13,19 @@ from modules.clip_selector import select_clips
 from modules.video_editor import edit_video
 
 def main():
+    from modules.key_manager import get_api_key, validate_key
+
+    # Secure key loading — prompts user if no key found
+    api_key, provider = get_api_key()
+
+    # Validate key before running pipeline
+    if not validate_key(api_key, provider):
+        print("[KILLFRAME] Invalid API key. Please run again and enter correct key.")
+        sys.exit(1)
+
+    # Pass to environment for modules to use
+    os.environ[f"{provider.upper()}_API_KEY"] = api_key
+
     parser = argparse.ArgumentParser(description="KILLFRAME-AGENT")
     parser.add_argument("--youtube", required=True)
     parser.add_argument("--footage", required=True)
