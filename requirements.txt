@@ -7,3 +7,4 @@ python-dotenv
 opencv-python
 numpy
 ffmpeg-python
+google-generativeai

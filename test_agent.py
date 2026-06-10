@@ -60,7 +60,7 @@ def test_clip_selector():
 def test_video_editor():
     try:
         try:
-            edit_video([], {"total_beats": 0, "timestamps": [], "avg_gap_seconds": 2.5}, "test_output.mp4", {})
+            edit_video([], {"beat_timestamps": [0.0, 1.0]}, "test_output.mp4", {"average_cut_pace_seconds": 2.5}, "test_music.mp3")
         except ValueError:
             return SUCCESS, "empty-clips error handled"
         except Exception as exc:
