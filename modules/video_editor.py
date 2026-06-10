@@ -85,7 +85,7 @@ def add_kill_text_opencv(clip, kill_num):
     def draw_text(get_frame, t):
         frame = get_frame(t)
         if t <= 0.9:
-            frame = frame.copy()
+            frame = np.ascontiguousarray(frame.copy())
             h, w = frame.shape[:2]
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 1.9
@@ -110,7 +110,7 @@ def get_intro_clip_opencv():
     black_clip = ColorClip((1920, 1080), [0, 0, 0], duration=0.5)
     
     def draw_intro(get_frame, t):
-        frame = get_frame(t).copy()
+        frame = np.ascontiguousarray(get_frame(t).copy())
         text = "KILLFRAME-AGENT"
         h, w = frame.shape[:2]
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -130,7 +130,7 @@ def get_outro_clip_opencv(last_clip):
     freeze = ImageClip(last_frame).set_duration(1.5)
     
     def draw_outro(get_frame, t):
-        frame = get_frame(t).copy()
+        frame = np.ascontiguousarray(get_frame(t).copy())
         text = "MADE WITH KILLFRAME-AGENT"
         h, w = frame.shape[:2]
         font = cv2.FONT_HERSHEY_SIMPLEX
