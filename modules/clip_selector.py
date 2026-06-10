@@ -17,76 +17,6 @@ def _list_video_files(footage_folder):
                 video_files.append(os.path.join(root, name))
     return sorted(video_files)
 
-def _crop_region(frame, region):
-    height, width = frame.shape[:2]
-    x0 = int(width * region[0])
-    y0 = int(height * region[1])
-    x1 = int(width * (region[0] + region[2]))
-    y1 = int(height * (region[1] + region[3]))
-    return frame[y0:y1, x0:x1]
-
-def _extract_and_grade_segment(video_path, start_time, end_time, out_path):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return None
-        
-    fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
-    start_frame = int(start_time * fps)
-    end_frame = int(end_time * fps)
-    
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-    
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
-    
-    max_diff = 0.0
-    max_brightness = 0.0
-    max_red = 0
-    
-    prev_g = None
-    for f in range(start_frame, end_frame):
-        ret, frame = cap.read()
-        if not ret:
-            break
-        out.write(frame)
-        
-        g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        brightness = float(np.mean(g))
-        if brightness > max_brightness:
-            max_brightness = brightness
-            
-        if prev_g is not None:
-            diff = float(np.mean(cv2.absdiff(g, prev_g)))
-            if diff > max_diff:
-                max_diff = diff
-        prev_g = g
-        
-        # Crop top-right corner to check for red pixel spikes
-        crop = _crop_region(frame, (0.7, 0.0, 0.3, 0.3))
-        if crop.size > 0:
-            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-            mask1 = cv2.inRange(hsv, np.array([0, 120, 120]), np.array([10, 255, 255]))
-            mask2 = cv2.inRange(hsv, np.array([170, 120, 120]), np.array([180, 255, 255]))
-            mask = cv2.bitwise_or(mask1, mask2)
-            red_count = int(cv2.countNonZero(mask))
-            if red_count > max_red:
-                max_red = red_count
-                
-    cap.release()
-    out.release()
-    
-    # Calculate intensity
-    # Include motion (diff), flash (brightness > 180), and red pixels (kills)
-    motion_intensity = max_diff
-    flash_intensity = 30.0 if max_brightness > 180.0 else 0.0
-    red_intensity = float(max_red) / 5.0
-    
-    intensity = motion_intensity + flash_intensity + red_intensity
-    return intensity
-
 def select_clips(footage_folder, style_profile):
     if not isinstance(style_profile, dict):
         raise ValueError("style_profile must be a dictionary")
@@ -96,131 +26,259 @@ def select_clips(footage_folder, style_profile):
         logger.warning("No video files found in %s", footage_folder)
         return []
 
+    video_path = video_files[0]
+
     # Ensure output folder exists
     os.makedirs(os.path.join("temp", "kills"), exist_ok=True)
 
-    clips = []
-    clip_counter = 1
+    # STEP 1 — Open video and get real stats
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video: {video_path}")
 
-    for video_path in video_files:
-        logger.info("Scanning video: %s", video_path)
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            logger.warning("Could not open video: %s", video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
+    total_duration = total_frames / fps
+    total_minutes = total_duration / 60
+    print(f"[KILLFRAME] Video loaded: {total_minutes:.1f} minutes, {total_frames} frames")
+    print(f"[KILLFRAME] Starting kill detection scan...")
+
+    # First pass: collect all motion scores for automatic threshold
+    all_motion_scores = []
+    frame_idx = 0
+    prev_frame = None
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # Read every 10th frame
+        if frame_idx % 10 != 0:
+            frame_idx += 1
             continue
-            
-        fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        total_duration = total_frames / fps if fps > 0 else 0.0
+
+        h, w = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Signal 3 — Motion Detection
+        motion_score = 0.0
+        if prev_frame is not None:
+            diff = cv2.absdiff(frame, prev_frame)
+            motion_score = float(diff.mean())
         
+        all_motion_scores.append(motion_score)
+        prev_frame = frame.copy()
+        frame_idx += 1
+
+    cap.release()
+
+    # STEP 4 — Calculate automatic threshold
+    if not all_motion_scores:
+        all_motion_scores = [0.0]
+    motion_mean = float(np.mean(all_motion_scores))
+    motion_std = float(np.std(all_motion_scores))
+    kill_threshold = motion_mean + 1.5 * motion_std
+    print(f"[KILLFRAME] Auto threshold calculated: {kill_threshold:.2f} based on your footage")
+
+    # STEP 7 — Smart clip count based on output duration
+    duration_setting = style_profile.get("output_duration", 60)
+    clips_needed = max(8, int(duration_setting / 3.5))
+    print(f"[KILLFRAME] Output duration: {duration_setting}s needs {clips_needed} clips")
+
+    # Perform scan (potentially with threshold lowering fallback)
+    def scan_video_for_kills(threshold_val):
+        cap = cv2.VideoCapture(video_path)
         frame_idx = 0
-        prev_gray = None
+        prev_frame = None
+        prev_gun_area = None
         cooldown_until = 0.0
-        
+        last_printed_progress = -5
+        kills_found = 0
+        detected_candidates = []
+
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-                
+
+            if frame_idx % 10 != 0:
+                frame_idx += 1
+                continue
+
             t = frame_idx / fps
-            frame_idx += 1
-            
+            progress = (frame_idx / total_frames) * 100
+
+            # STEP 2 — Real progress tracking while scanning
+            progress_pct = int(progress)
+            if progress_pct >= last_printed_progress + 5:
+                print(f"[KILLFRAME] Scanning: {progress_pct}% | Kills found so far: {kills_found}")
+                last_printed_progress = progress_pct
+
             # Skip first 15 seconds
             if t < 15.0:
+                frame_idx += 1
                 continue
-                
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            mean_brightness = float(np.mean(gray))
-            
-            # Skip OBS/menu black or blank transition screens
-            if mean_brightness < 12.0 or mean_brightness > 240.0:
-                prev_gray = gray
-                continue
-                
-            # Skip static screens (OBS/menu/loading)
-            if prev_gray is not None:
-                diff_score = float(np.mean(cv2.absdiff(gray, prev_gray)))
-                if diff_score < 1.0:
-                    prev_gray = gray
-                    continue
-            prev_gray = gray
-            
-            # Scan top-right region for RED pixel spikes
-            crop = _crop_region(frame, (0.7, 0.0, 0.3, 0.3))
-            if crop.size > 0:
-                hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-                mask1 = cv2.inRange(hsv, np.array([0, 120, 120]), np.array([10, 255, 255]))
-                mask2 = cv2.inRange(hsv, np.array([170, 120, 120]), np.array([180, 255, 255]))
-                mask = cv2.bitwise_or(mask1, mask2)
-                red_pixels = int(cv2.countNonZero(mask))
-                
-                # Scan for RED spike
-                if red_pixels > 200 and t >= cooldown_until:
-                    # Found a kill moment!
-                    logger.info("Detected kill moment at %.2f seconds (red pixels: %d)", t, red_pixels)
-                    
-                    # Extract 2.5 seconds around kill moment (1.5s before, 1.0s after)
-                    start_t = max(0.0, t - 1.5)
-                    end_t = min(total_duration, t + 1.0)
-                    
-                    out_name = f"kill_{clip_counter:03d}.mp4"
-                    out_path = os.path.join("temp", "kills", out_name)
-                    
-                    intensity = _extract_and_grade_segment(video_path, start_t, end_t, out_path)
-                    if intensity is not None:
-                        clips.append({
-                            "path": out_path,
-                            "start": 0.0,
-                            "end": 2.5,
-                            "duration": 2.5,
-                            "score": intensity
-                        })
-                        clip_counter += 1
-                        
-                    cooldown_until = t + 3.0
-                    
-        cap.release()
 
-    # Fallback to evenly spaced clips if we have fewer than 8 clips
-    if len(clips) < 8 and video_files:
-        logger.info("Found only %d clips. Generating fallbacks to reach at least 8 clips.", len(clips))
-        # Use the first video file to generate fallbacks
-        video_path = video_files[0]
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        total_duration = total_frames / fps
-        cap.release()
-        
-        needed = 8 - len(clips)
-        # Distribute fallback timestamps across the video duration, starting after 15 seconds
-        step = max(3.0, (total_duration - 20.0) / (needed + 1))
-        for i in range(needed):
-            fallback_t = 15.0 + (i + 1) * step
-            if fallback_t + 1.0 >= total_duration:
-                break
-                
-            start_t = max(0.0, fallback_t - 1.5)
-            end_t = min(total_duration, fallback_t + 1.0)
+            h, w = frame.shape[:2]
+
+            # STEP 5 — Filter bad segments automatically
+            # Calculate average color of center 60% of frame
+            center_area = frame[int(h*0.2):int(h*0.8), int(w*0.2):int(w*0.8)]
+            mean_color = center_area.mean(axis=(0,1)) # B, G, R
             
-            out_name = f"kill_fallback_{clip_counter:03d}.mp4"
-            out_path = os.path.join("temp", "kills", out_name)
-            
-            intensity = _extract_and_grade_segment(video_path, start_t, end_t, out_path)
-            if intensity is not None:
-                clips.append({
-                    "path": out_path,
-                    "start": 0.0,
-                    "end": 2.5,
-                    "duration": 2.5,
-                    "score": intensity
+            # If standard deviation of colors is below 15 — solid color screen — skip it
+            std_dev = center_area.std()
+            if std_dev < 15.0:
+                timestamp_str = f"{int(t)//60}:{int(t)%60:02d}"
+                print(f"[KILLFRAME] Skipping non-gameplay segment at {timestamp_str}")
+                prev_frame = frame.copy()
+                gun_area = frame[int(h*0.6):h, int(w*0.3):int(w*0.7)]
+                prev_gun_area = gun_area.copy()
+                frame_idx += 1
+                continue
+
+            # If frame is mostly dark grey (all channels 50-100) — OBS or desktop — skip
+            if 50 <= mean_color[0] <= 100 and 50 <= mean_color[1] <= 100 and 50 <= mean_color[2] <= 100:
+                timestamp_str = f"{int(t)//60}:{int(t)%60:02d}"
+                print(f"[KILLFRAME] Skipping non-gameplay segment at {timestamp_str}")
+                prev_frame = frame.copy()
+                gun_area = frame[int(h*0.6):h, int(w*0.3):int(w*0.7)]
+                prev_gun_area = gun_area.copy()
+                frame_idx += 1
+                continue
+
+            # If top 20% of frame is mostly yellow/orange — victory screen — skip
+            top_area = frame[0:int(h*0.2), :]
+            top_hsv = cv2.cvtColor(top_area, cv2.COLOR_BGR2HSV)
+            mask_yo = cv2.inRange(top_hsv, np.array([10, 100, 100]), np.array([35, 255, 255]))
+            yo_ratio = mask_yo.sum() / (mask_yo.size * 255)
+            if yo_ratio > 0.35:
+                timestamp_str = f"{int(t)//60}:{int(t)%60:02d}"
+                print(f"[KILLFRAME] Skipping non-gameplay segment at {timestamp_str}")
+                prev_frame = frame.copy()
+                gun_area = frame[int(h*0.6):h, int(w*0.3):int(w*0.7)]
+                prev_gun_area = gun_area.copy()
+                frame_idx += 1
+                continue
+
+            # STEP 3 — Automatic kill detection using 4 signals
+            # Signal 1 — Kill Feed Detection: Crop top-right 25% of frame
+            kill_feed_area = frame[0:int(h*0.15), int(w*0.75):w]
+            red_mask = (kill_feed_area[:,:,2] > 150) & (kill_feed_area[:,:,0] < 80)
+            red_ratio = red_mask.sum() / kill_feed_area.size
+            kill_feed_score = red_ratio * 100
+
+            # Signal 2 — Screen Flash Detection
+            brightness = float(frame.mean())
+            flash_score = max(0, brightness - 160)
+
+            # Signal 3 — Motion Detection
+            motion_score = 0.0
+            if prev_frame is not None:
+                diff = cv2.absdiff(frame, prev_frame)
+                motion_score = float(diff.mean())
+
+            # Signal 4 — Gun Recoil Detection: Check center bottom area
+            gun_area = frame[int(h*0.6):h, int(w*0.3):int(w*0.7)]
+            recoil_score = 0.0
+            if prev_gun_area is not None:
+                gun_diff = float(cv2.absdiff(gun_area, prev_gun_area).mean())
+                recoil_score = gun_diff
+
+            # Compute combined score (for intensity)
+            kill_score = motion_score + kill_feed_score + flash_score + recoil_score
+
+            # Automatic kill threshold check
+            if motion_score > threshold_val and t >= cooldown_until:
+                timestamp_str = f"{int(t)//60}:{int(t)%60:02d}"
+                print(f"[KILLFRAME] Found kill at {timestamp_str} — motion score: {motion_score:.1f}")
+                detected_candidates.append({
+                    "timestamp": t,
+                    "score": kill_score
                 })
-                clip_counter += 1
+                kills_found += 1
+                cooldown_until = t + 3.0
 
-    # Sort by intensity (score) descending
-    clips.sort(key=lambda x: x["score"], reverse=True)
-    
-    # Return top 8 to 15 clips
-    selected_clips = clips[:max(8, min(15, len(clips)))]
-    logger.info("Selected %d top highlights sorted by intensity", len(selected_clips))
-    return selected_clips
+            # Update previous frames
+            prev_frame = frame.copy()
+            prev_gun_area = gun_area.copy()
+            frame_idx += 1
+
+        cap.release()
+        return detected_candidates
+
+    # Scan and detect candidates
+    candidates = scan_video_for_kills(kill_threshold)
+
+    # STEP 9 — Bulletproof fallback (kills found less than 8 -> lower threshold by 30% and rescan)
+    if len(candidates) < 8:
+        print("[KILLFRAME] Not enough kills found, lowering threshold and rescanning...")
+        kill_threshold *= 0.7
+        candidates = scan_video_for_kills(kill_threshold)
+
+    # Extract clips and build final result
+    selected_kills = []
+    avg_kill_score = 0.0
+    clips_list = []
+
+    if len(candidates) >= 8:
+        # Sort by score descending and take the best
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        top_candidates = candidates[:max(8, min(clips_needed, len(candidates)))]
+        selected_kills = [x["timestamp"] for x in top_candidates]
+        avg_kill_score = float(np.mean([x["score"] for x in top_candidates]))
+
+        # STEP 6 — Extract clips with real ffmpeg
+        print(f"[KILLFRAME] Scan complete! Found {len(candidates)} kill moments")
+        print(f"[KILLFRAME] Extracting {len(selected_kills)} best clips...")
+        for i, timestamp in enumerate(selected_kills):
+            start = max(0.0, timestamp - 1.0)
+            duration = 3.5
+            output = f"temp/kills/kill_{i:03d}.mp4"
+            cmd = f'ffmpeg -ss {start} -i "{video_path}" -t {duration} -c copy "{output}" -y'
+            os.system(cmd)
+            print(f"[KILLFRAME] Extracted clip {i+1}/{len(selected_kills)}: {output}")
+            
+            clips_list.append({
+                "path": output,
+                "start": 0.0,
+                "end": 3.5,
+                "duration": 3.5,
+                "score": float(np.mean([c["score"] for c in top_candidates if c["timestamp"] == timestamp]))
+            })
+    else:
+        # Fallback to splitting video into equal segments
+        print("[KILLFRAME] Fallback: Splitting video into equal segments...")
+        step = max(3.5, (total_duration - 20.0) / clips_needed)
+        for i in range(clips_needed):
+            timestamp = 15.0 + i * step
+            start = max(0.0, timestamp - 1.0)
+            duration = 3.5
+            output = f"temp/kills/kill_{i:03d}.mp4"
+            cmd = f'ffmpeg -ss {start} -i "{video_path}" -t {duration} -c copy "{output}" -y'
+            os.system(cmd)
+            print(f"[KILLFRAME] Extracted clip {i+1}/{clips_needed}: {output}")
+            
+            clips_list.append({
+                "path": output,
+                "start": 0.0,
+                "end": 3.5,
+                "duration": 3.5,
+                "score": 50.0 # fallback default score
+            })
+        selected_kills = [15.0 + i * step for i in range(clips_needed)]
+        avg_kill_score = 50.0
+
+    # STEP 8 — Final summary
+    print("[KILLFRAME] ═══════════════════════════════")
+    print("[KILLFRAME] KILL DETECTION COMPLETE")
+    print(f"[KILLFRAME] Total footage scanned: {total_minutes:.1f} minutes")
+    print(f"[KILLFRAME] Kill moments detected: {len(candidates)}")
+    print(f"[KILLFRAME] Clips selected: {len(selected_kills)}")
+    print(f"[KILLFRAME] Average kill score: {avg_kill_score:.1f}")
+    print("[KILLFRAME] ═══════════════════════════════")
+
+    # Sort final clips by score descending
+    clips_list.sort(key=lambda x: x["score"], reverse=True)
+    return clips_list
