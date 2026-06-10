@@ -9,15 +9,16 @@ def edit_video(clips, beat_timeline, output_path, style_profile, music_path):
     # STEP 1 — Load and validate clips
     print(f"[KILLFRAME] Loading {len(clips)} kill clips...")
     loaded_clips = []
-    for i, clip_path in enumerate(clips):
+    for i, clip_info in enumerate(clips):
         try:
-            clip = VideoFileClip(clip_path)
+            path = clip_info["path"] if isinstance(clip_info, dict) else clip_info
+            clip = VideoFileClip(path)
             # Resize clip to 1080p for uniform sizing
             clip = clip.resize((1920, 1080))
             print(f"[KILLFRAME] Loaded clip {i+1}/{len(clips)}: {clip.duration:.1f}s")
             loaded_clips.append(clip)
         except Exception as e:
-            print(f"[KILLFRAME] Skipping corrupt clip: {clip_path}")
+            print(f"[KILLFRAME] Skipping corrupt clip: {clip_info}")
 
     if not loaded_clips:
         raise ValueError("No valid clips loaded for video editing.")
