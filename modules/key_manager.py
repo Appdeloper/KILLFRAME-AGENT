@@ -114,8 +114,10 @@ def validate_key(api_key, provider):
         print(f"[KILLFRAME] [OK] Key valid!")
         return True
     except Exception as e:
-        print(f"[KILLFRAME] [ERROR] Key invalid: {str(e)[:50]}")
-        # Delete bad key from .env
+        print(f"[KILLFRAME] [ERROR] Key invalid: {str(e)[:100]}")
+        # Delete bad key from .env and active environment
         for key_name in KEY_NAMES:
+            if key_name in os.environ:
+                del os.environ[key_name]
             set_key(str(ENV_FILE), key_name, "")
         return False
