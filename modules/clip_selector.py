@@ -58,6 +58,7 @@ def select_clips(footage_folder, style_profile):
     frame_scores = []
     frame_idx = 0
     prev_gray = None
+    prev_gray_small = None
     prev_gun_zone = None
 
     t_scan_start = time.time()
@@ -94,6 +95,7 @@ def select_clips(footage_folder, style_profile):
         # Initialize references on the first processed frame
         if prev_gray is None:
             prev_gray = gray.copy()
+            prev_gray_small = cv2.resize(gray, (480, 270))
             prev_gun_zone = gun_zone.copy()
 
         # Bad segment checks:
@@ -137,9 +139,11 @@ def select_clips(footage_folder, style_profile):
         brightness = frame.mean()
         flash_score = max(0, brightness - 150) * 3
 
-        # Signal 3 — Optical Flow Motion
-        flow = cv2.calcOpticalFlowFarneback(prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        # Signal 3 — Optical Flow Motion (computed on resized small frames for speed)
+        small_gray = cv2.resize(gray, (480, 270))
+        flow = cv2.calcOpticalFlowFarneback(prev_gray_small, small_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
         motion_score = np.sqrt(flow[...,0]**2 + flow[...,1]**2).mean() * 4
+        prev_gray_small = small_gray.copy()
 
         # Signal 4 — Gun Recoil
         recoil_score = cv2.absdiff(gun_zone, prev_gun_zone).mean() * 2
