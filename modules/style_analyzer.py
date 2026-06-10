@@ -3,17 +3,34 @@ import logging
 import os
 import re
 import tempfile
-from glob import glob
-
-import requests
 from yt_dlp import YoutubeDL
-import google.generativeai as genai
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class StyleAnalyzerError(Exception):
-    pass
+# Ensure all libraries are installed
+def ensure_libraries():
+    libs = ["moviepy", "opencv-python", "numpy", "google-generativeai", "openai", "groq", "anthropic"]
+    for lib in libs:
+        try:
+            __import__(lib.replace("-", "_"))
+        except ImportError:
+            os.system(f"pip install {lib}")
+            print(f"[KILLFRAME] Installed: {lib}")
+
+ensure_libraries()
+
+def detect_api_provider(api_key):
+    if api_key.startswith("sk-ant-"):
+        return "anthropic"
+    elif api_key.startswith("sk-"):
+        return "openai"
+    elif api_key.startswith("gsk_"):
+        return "groq"
+    elif api_key.startswith("AIza"):
+        return "gemini"
+    else:
+        return "gemini"  # default fallback
 
 def _clean_text(text):
     if not text:
@@ -98,28 +115,45 @@ def _build_creator_profile(entries, transcripts):
     return "\n\n".join(blocks)
 
 def analyze_style(youtube_url):
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        logger.warning("GEMINI_API_KEY not found in environment. Using default style profile fallback.")
-        default_profile = {
-            "cuts_per_minute": 12.0,
-            "transition_style": "cut",
-            "pacing": "fast",
-            "vibe": "intense",
-            "color_tone": "dark and saturated",
-            "recommended_clip_length": 2.5,
-            "average_cut_pace_seconds": 5.0,
-            "intensity_preference": "fast",
-            "visual_triggers": ["intense"]
-        }
-        logger.info("Style analysis complete (fallback): %s", default_profile)
-        return default_profile
+    # Load API key in order of preference
+    api_key = (
+        os.getenv("GEMINI_API_KEY") or
+        os.getenv("OPENAI_API_KEY") or
+        os.getenv("GROQ_API_KEY") or
+        os.getenv("ANTHROPIC_API_KEY") or
+        None
+    )
 
-    logger.info("Configuring Gemini API key and model")
-    genai.configure(api_key=api_key)
+    default_profile = {
+        "cuts_per_minute": 20,
+        "transition_style": "hard cut",
+        "pacing": "aggressive",
+        "vibe": "hype",
+        "color_tone": "dark saturated",
+        "recommended_clip_length": 2.5,
+        "uses_slowmo": False,
+        "output_duration": 60
+    }
 
+    # Helper to map compatibility keys
+    def finalize_profile(data):
+        cuts = float(data.get("cuts_per_minute", 20.0))
+        if cuts <= 0:
+            cuts = 20.0
+        data["average_cut_pace_seconds"] = float(round(60.0 / cuts, 2))
+        data["intensity_preference"] = data.get("pacing", "aggressive").lower()
+        data["visual_triggers"] = [data.get("vibe", "hype").lower()]
+        return data
+
+    if not api_key:
+        print("[KILLFRAME] Warning: No API keys found in environment. Using default style profile.")
+        return finalize_profile(default_profile)
+
+    provider = detect_api_provider(api_key)
+    print(f"[KILLFRAME] AI Provider detected: {provider.capitalize()}")
+    print("[KILLFRAME] Analyzing reference style...")
+
+    # Build creator profile
     logger.info("Extracting metadata for %s", youtube_url)
     ydl_opts = {
         "skip_download": True,
@@ -143,7 +177,6 @@ def analyze_style(youtube_url):
         entries.append(info)
 
     entries = [entry for entry in entries if entry]
-    
     profile_text = ""
     if entries:
         entries = entries[:5]
@@ -157,43 +190,66 @@ def analyze_style(youtube_url):
         profile_text = _build_creator_profile(entries, transcripts)
 
     if not profile_text:
-        # Fallback profile text if yt-dlp fails
-        profile_text = "Free Fire montage creator, fast pacing, intense cuts, high motion, red and dark colors."
+        profile_text = "Free Fire gaming montage, high pacing, intense color grade, white flashes."
 
     prompt = (
         "You are an expert film editor AI. Analyze the gaming creator profile and return exactly one JSON object with these keys:\n"
         "- cuts_per_minute (float)\n"
         "- transition_style (string)\n"
-        "- pacing (string: fast, smooth, slow-mo)\n"
+        "- pacing (string)\n"
         "- vibe (string)\n"
         "- color_tone (string)\n"
         "- recommended_clip_length (float)\n"
+        "- uses_slowmo (boolean)\n"
+        "- output_duration (integer)\n"
         "Do not include any explanatory text outside the JSON object.\n\n"
         f"Creator profile for the most recent videos:\n{profile_text}\n"
     )
 
-    logger.info("Generating style analysis using gemini-1.5-flash")
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    response = model.generate_content(
-        prompt,
-        generation_config={"response_mime_type": "application/json"}
-    )
-    
-    res_text = response.text.strip()
-    logger.info("Received raw response: %s", res_text)
-    
+    result_text = ""
     try:
-        data = json.loads(res_text)
-    except Exception as e:
-        raise StyleAnalyzerError(f"Failed to parse JSON response from Gemini: {e}")
+        if provider == "openai":
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            result_text = response.choices[0].message.content
+        elif provider == "anthropic":
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            result_text = response.content[0].text
+        elif provider == "groq":
+            from groq import Groq
+            client = Groq(api_key=api_key)
+            response = client.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            result_text = response.choices[0].message.content
+        else: # gemini
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = model.generate_content(prompt)
+            result_text = response.text
 
-    # Map old keys for compatibility
-    cuts = float(data.get("cuts_per_minute", 15.0))
-    if cuts <= 0:
-        cuts = 15.0
-    data["average_cut_pace_seconds"] = float(round(60.0 / cuts, 2))
-    data["intensity_preference"] = data.get("pacing", "high").lower()
-    data["visual_triggers"] = [data.get("vibe", "intense").lower()]
-    
-    logger.info("Style analysis complete: %s", data)
-    return data
+        # Parse JSON
+        start = result_text.find('{')
+        end = result_text.rfind('}')
+        if start != -1 and end != -1:
+            parsed = json.loads(result_text[start:end+1])
+            logger.info("Successfully parsed AI response: %s", parsed)
+            return finalize_profile(parsed)
+        else:
+            raise ValueError("No JSON block found in response")
+
+    except Exception as e:
+        print(f"[KILLFRAME] AI API Call failed: {e}. Falling back to default style profile.")
+        return finalize_profile(default_profile)
