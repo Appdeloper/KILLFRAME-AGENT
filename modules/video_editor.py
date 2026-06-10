@@ -79,13 +79,24 @@ def speed_ramp(clip):
     fast = clip.subclip(min(0.4, clip.duration*0.3)).fx(vfx.speedx, 1.4)
     return concatenate_videoclips([slow, fast])
 
+def draw_text_safe(frame, text, org, font, font_scale, color, thickness, line_type=cv2.LINE_AA):
+    is_float = frame.dtype == np.float32 or frame.dtype == np.float64 or (frame.max() <= 1.01 and frame.dtype != np.uint8)
+    if is_float:
+        frame_uint8 = np.ascontiguousarray((frame * 255.0).clip(0, 255).astype(np.uint8))
+    else:
+        frame_uint8 = np.ascontiguousarray(frame.copy().astype(np.uint8))
+    cv2.putText(frame_uint8, text, org, font, font_scale, color, thickness, line_type)
+    if is_float:
+        return frame_uint8.astype(np.float32) / 255.0
+    else:
+        return frame_uint8
+
 def add_kill_text_opencv(clip, kill_num):
     text = f"KILL {kill_num}"
     
     def draw_text(get_frame, t):
         frame = get_frame(t)
         if t <= 0.9:
-            frame = np.ascontiguousarray(frame.copy())
             h, w = frame.shape[:2]
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 1.9
@@ -98,10 +109,10 @@ def add_kill_text_opencv(clip, kill_num):
             x = w - text_size[0] - margin_x
             y = text_size[1] + margin_y
             
-            # Red outline (BGR red is (0, 0, 255))
-            cv2.putText(frame, text, (x, y), font, font_scale, (0, 0, 255), thickness_outline, cv2.LINE_AA)
+            # Red outline
+            frame = draw_text_safe(frame, text, (x, y), font, font_scale, (0, 0, 255), thickness_outline)
             # White text
-            cv2.putText(frame, text, (x, y), font, font_scale, (255, 255, 255), thickness_text, cv2.LINE_AA)
+            frame = draw_text_safe(frame, text, (x, y), font, font_scale, (255, 255, 255), thickness_text)
         return frame
         
     return clip.fl(draw_text)
@@ -110,7 +121,7 @@ def get_intro_clip_opencv():
     black_clip = ColorClip((1920, 1080), [0, 0, 0], duration=0.5)
     
     def draw_intro(get_frame, t):
-        frame = np.ascontiguousarray(get_frame(t).copy())
+        frame = get_frame(t)
         text = "KILLFRAME-AGENT"
         h, w = frame.shape[:2]
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -120,8 +131,7 @@ def get_intro_clip_opencv():
         x = (w - text_size[0]) // 2
         y = (h + text_size[1]) // 2
         # #ff4444 red is BGR (68, 68, 255)
-        cv2.putText(frame, text, (x, y), font, font_scale, (68, 68, 255), thickness, cv2.LINE_AA)
-        return frame
+        return draw_text_safe(frame, text, (x, y), font, font_scale, (68, 68, 255), thickness)
         
     return black_clip.fl(draw_intro)
 
@@ -130,7 +140,7 @@ def get_outro_clip_opencv(last_clip):
     freeze = ImageClip(last_frame).set_duration(1.5)
     
     def draw_outro(get_frame, t):
-        frame = np.ascontiguousarray(get_frame(t).copy())
+        frame = get_frame(t)
         text = "MADE WITH KILLFRAME-AGENT"
         h, w = frame.shape[:2]
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -139,10 +149,10 @@ def get_outro_clip_opencv(last_clip):
         text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
         x = (w - text_size[0]) // 2
         y = h - 60
-        cv2.putText(frame, text, (x, y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
-        return frame
+        return draw_text_safe(frame, text, (x, y), font, font_scale, (255, 255, 255), thickness)
         
     return freeze.fl(draw_outro)
+
 
 def edit_video(clips, beat_timeline, output_path, style_profile, music_path):
     print(f"[KILLFRAME] Loading {len(clips)} kill clips...")

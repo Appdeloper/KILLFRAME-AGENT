@@ -99,7 +99,7 @@ def validate_key(api_key, provider):
             from groq import Groq
             client = Groq(api_key=api_key)
             client.chat.completions.create(
-                model="llama3-8b-8192",
+                model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": "Hi"}],
                 max_tokens=5
             )

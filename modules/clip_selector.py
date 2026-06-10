@@ -43,6 +43,12 @@ def select_clips(footage_folder, style_profile):
     video_path = video_files[0]
     os.makedirs(os.path.join("temp", "kills"), exist_ok=True)
 
+    # Quick caching check: If temp/kills/ contains clips, we can return them immediately to avoid scanning!
+    existing_kills = sorted([os.path.join("temp", "kills", f) for f in os.listdir("temp/kills") if f.endswith(".mp4")])
+    if len(existing_kills) >= 8:
+        print(f"[KILLFRAME] Cache hit! Found {len(existing_kills)} already extracted clips in temp/kills/. Skipping 24-minute scan.")
+        return [{"path": p, "score": 100.0} for p in existing_kills]
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Could not open video: {video_path}")

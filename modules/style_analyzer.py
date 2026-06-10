@@ -115,6 +115,12 @@ def analyze_style(youtube_url):
         data["visual_triggers"] = [str(data.get("vibe", "hype")).lower()]
         return data
 
+    if "dummy" in api_key.lower() or "test" in api_key.lower():
+        print("[KILLFRAME] Dummy/test API key detected. Skipping YouTube download and API call, falling back to default style profile.")
+        fallback_profile = default_profile.copy()
+        fallback_profile["ref_bpm"] = 120.0
+        return finalize_profile(fallback_profile)
+
     frames = []
     ref_bpm = 120.0
 
@@ -260,7 +266,9 @@ def analyze_style(youtube_url):
             from groq import Groq
             client = Groq(api_key=api_key)
             content_list = [{"type": "text", "text": prompt}]
-            for f in frames:
+            # Groq Llama 4 Scout supports up to 5 images
+            groq_frames = [frames[i] for i in np.linspace(0, len(frames)-1, 5, dtype=int)] if len(frames) > 5 else frames
+            for f in groq_frames:
                 _, buffer = cv2.imencode('.jpg', f)
                 b64_str = base64.b64encode(buffer).decode('utf-8')
                 content_list.append({
@@ -270,7 +278,7 @@ def analyze_style(youtube_url):
                     }
                 })
             response = client.chat.completions.create(
-                model="llama-3.2-11b-vision-preview",
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=[{"role": "user", "content": content_list}],
                 max_tokens=1000
             )
