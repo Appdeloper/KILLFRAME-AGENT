@@ -1,0 +1,22 @@
+{
+  "video_count": 100,
+  "master_style": {
+    "learned_from_videos": 100,
+    "cuts_per_minute": 25.0,
+    "avg_clip_length": 2.2,
+    "min_clip_length": 1.0,
+    "recommended_clip_length": 2.2,
+    "transition_style": "flash",
+    "color_grade": "bright_warm",
+    "brightness_level": 135.0,
+    "contrast_level": 1.2,
+    "saturation_level": 1.2,
+    "pacing": "aggressive",
+    "uses_flash": true,
+    "flash_duration": 0.04,
+    "vibe": "hype",
+    "beat_sync_strength": "strong",
+    "output_duration": 60
+  },
+  "individual_metrics": []
+}

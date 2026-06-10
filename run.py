@@ -228,11 +228,36 @@ def run_agent(youtube, footage, music, duration, output):
         print("  ❌ Something went wrong. Check errors above.")
         print("="*55)
 
+def ask_learning_mode(youtube_url):
+    print()
+    print("─"*55)
+    print("  STEP 0 — Learning Mode")
+    print("─"*55)
+    print("  [L] Learn from 100 YouTube videos first (recommended for best results)")
+    print("  [S] Skip learning and use cached intelligence")
+    print()
+    while True:
+        choice = input("  Choose (L/S): ").strip().upper()
+        if choice == 'L':
+            from modules.youtube_learner import learn_from_youtube
+            # Call learn_from_youtube
+            learn_from_youtube(reference_url=youtube_url, max_videos=100)
+            print()
+            print("[KILLFRAME] Intelligence cached to style_intelligence.json")
+            print("[KILLFRAME] Next run will be instant — no relearning needed")
+            print("[KILLFRAME] To relearn: delete style_intelligence.json")
+            break
+        elif choice == 'S':
+            print("  [✅] Skipping learning, using cached/default intelligence")
+            break
+        print("  [!] Enter L or S")
+
 def main():
     clear()
     banner()
     ask_api_key()
     youtube = ask_reference()
+    ask_learning_mode(youtube)
     footage = ask_footage()
     music = ask_music()
     duration = ask_duration()
@@ -244,3 +269,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
