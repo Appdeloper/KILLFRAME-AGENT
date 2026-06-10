@@ -7,36 +7,18 @@ from glob import glob
 
 import requests
 from yt_dlp import YoutubeDL
+import google.generativeai as genai
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-GROQ_MODEL = "llama3-8b-8192"
-GROQ_ENDPOINT = f"https://api.groq.ai/v1/models/{GROQ_MODEL}/completions"
-
-STYLE_SCHEMA = {
-    "average_cut_pace_seconds": float,
-    "intensity_preference": str,
-    "visual_triggers": list,
-}
-
-
 class StyleAnalyzerError(Exception):
     pass
-
-
-def _load_groq_api_key():
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise KeyError("GROQ_API_KEY is required for style analysis")
-    return api_key
-
 
 def _clean_text(text):
     if not text:
         return ""
     return re.sub(r"\s+", " ", text.strip())
-
 
 def _transcript_from_vtt(path):
     try:
@@ -53,7 +35,6 @@ def _transcript_from_vtt(path):
     except Exception:
         return ""
 
-
 def _fetch_transcript(video_url, tmp_dir):
     options = {
         "skip_download": True,
@@ -66,14 +47,15 @@ def _fetch_transcript(video_url, tmp_dir):
         "nocheckcertificate": True,
     }
     with YoutubeDL(options) as ydl:
-        info = ydl.extract_info(video_url, download=False)
-        video_id = info.get("id")
-        if not video_id:
-            return ""
         try:
+            info = ydl.extract_info(video_url, download=False)
+            video_id = info.get("id")
+            if not video_id:
+                return ""
             ydl.download([video_url])
         except Exception as exc:
             logger.warning("Transcript download failed for %s: %s", video_url, exc)
+            return ""
         patterns = [
             os.path.join(tmp_dir, f"{video_id}.en.vtt"),
             os.path.join(tmp_dir, f"{video_id}.vtt"),
@@ -84,7 +66,6 @@ def _fetch_transcript(video_url, tmp_dir):
             if os.path.exists(path):
                 return _transcript_from_vtt(path)
     return ""
-
 
 def _collect_video_metadata(entry):
     return {
@@ -98,7 +79,6 @@ def _collect_video_metadata(entry):
         "upload_date": entry.get("upload_date"),
         "view_count": entry.get("view_count"),
     }
-
 
 def _build_creator_profile(entries, transcripts):
     blocks = []
@@ -117,93 +97,17 @@ def _build_creator_profile(entries, transcripts):
         )
     return "\n\n".join(blocks)
 
-
-def _extract_response_text(data):
-    if not isinstance(data, dict):
-        return None
-    if "output_text" in data and isinstance(data["output_text"], str):
-        return data["output_text"]
-    if "output" in data:
-        output = data["output"]
-        if isinstance(output, list):
-            parts = []
-            for item in output:
-                if isinstance(item, dict) and "content" in item:
-                    parts.append(item["content"])
-                elif isinstance(item, str):
-                    parts.append(item)
-            if parts:
-                return "\n".join(parts)
-        elif isinstance(output, str):
-            return output
-    if "choices" in data and isinstance(data["choices"], list) and data["choices"]:
-        first = data["choices"][0]
-        if isinstance(first, dict):
-            if "message" in first and isinstance(first["message"], dict):
-                return first["message"].get("content")
-            return first.get("text") or first.get("output_text")
-    return None
-
-
-def _safe_json_from_text(text):
-    if not text:
-        raise StyleAnalyzerError("Empty response text from Groq")
-    first = text.find("{")
-    last = text.rfind("}")
-    if first == -1 or last == -1 or last <= first:
-        raise StyleAnalyzerError("No JSON object found in Groq response")
-    try:
-        return json.loads(text[first:last + 1])
-    except json.JSONDecodeError as exc:
-        raise StyleAnalyzerError(f"Failed to parse JSON: {exc}") from exc
-
-
-def _validate_style_payload(payload):
-    result = {}
-    if not isinstance(payload, dict):
-        raise StyleAnalyzerError("Groq returned a non-JSON object")
-    for key, expected_type in STYLE_SCHEMA.items():
-        value = payload.get(key)
-        if value is None:
-            raise StyleAnalyzerError(f"Missing required style key: {key}")
-        if not isinstance(value, expected_type):
-            if expected_type is float and isinstance(value, (int, str)):
-                try:
-                    value = float(value)
-                except (ValueError, TypeError):
-                    raise StyleAnalyzerError(f"Invalid value for {key}: {value}")
-            elif expected_type is list and isinstance(value, str):
-                value = [item.strip() for item in value.split(",") if item.strip()]
-            else:
-                raise StyleAnalyzerError(f"Invalid type for {key}: {type(value).__name__}")
-        result[key] = value
-    if not isinstance(result["visual_triggers"], list):
-        raise StyleAnalyzerError("visual_triggers must be a list")
-    return {
-        "average_cut_pace_seconds": float(result["average_cut_pace_seconds"]),
-        "intensity_preference": str(result["intensity_preference"]).lower(),
-        "visual_triggers": [str(item).lower() for item in result["visual_triggers"]],
-    }
-
-
-def _query_groq(api_key, prompt):
-    response = requests.post(
-        GROQ_ENDPOINT,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={"input": prompt, "max_output_tokens": 256},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
 def analyze_style(youtube_url):
-    api_key = _load_groq_api_key()
-    logger.info("Extracting metadata for %s", youtube_url)
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise KeyError("GEMINI_API_KEY is required for style analysis")
 
+    logger.info("Configuring Gemini API key and model")
+    genai.configure(api_key=api_key)
+
+    logger.info("Extracting metadata for %s", youtube_url)
     ydl_opts = {
         "skip_download": True,
         "quiet": True,
@@ -211,7 +115,11 @@ def analyze_style(youtube_url):
         "ignoreerrors": True,
     }
     with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(youtube_url, download=False)
+        try:
+            info = ydl.extract_info(youtube_url, download=False)
+        except Exception as exc:
+            logger.warning("Failed to extract YouTube info: %s. Using default profile.", exc)
+            info = {}
 
     entries = []
     if isinstance(info, dict) and info.get("entries"):
@@ -222,35 +130,57 @@ def analyze_style(youtube_url):
         entries.append(info)
 
     entries = [entry for entry in entries if entry]
-    if not entries:
-        raise StyleAnalyzerError("No videos found at the provided YouTube URL")
+    
+    profile_text = ""
+    if entries:
+        entries = entries[:5]
+        transcripts = {}
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for entry in entries:
+                video_url = entry.get("webpage_url")
+                if not video_url:
+                    continue
+                transcripts[video_url] = _fetch_transcript(video_url, tmp_dir)
+        profile_text = _build_creator_profile(entries, transcripts)
 
-    entries = entries[:5]
-    transcripts = {}
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        for entry in entries:
-            video_url = entry.get("webpage_url")
-            if not video_url:
-                continue
-            transcripts[video_url] = _fetch_transcript(video_url, tmp_dir)
-
-    profile_text = _build_creator_profile(entries, transcripts)
     if not profile_text:
-        raise StyleAnalyzerError("Unable to build creator profile from metadata")
+        # Fallback profile text if yt-dlp fails
+        profile_text = "Free Fire montage creator, fast pacing, intense cuts, high motion, red and dark colors."
 
     prompt = (
-        "You are a film editor AI. Analyze the creator profile and return exactly one JSON object with the following keys:\n"
-        "- average_cut_pace_seconds (float)\n"
-        "- intensity_preference (high, smooth, slow-mo)\n"
-        "- visual_triggers (array of strings)\n"
+        "You are an expert film editor AI. Analyze the gaming creator profile and return exactly one JSON object with these keys:\n"
+        "- cuts_per_minute (float)\n"
+        "- transition_style (string)\n"
+        "- pacing (string: fast, smooth, slow-mo)\n"
+        "- vibe (string)\n"
+        "- color_tone (string)\n"
+        "- recommended_clip_length (float)\n"
         "Do not include any explanatory text outside the JSON object.\n\n"
         f"Creator profile for the most recent videos:\n{profile_text}\n"
     )
 
-    logger.info("Sending analysis prompt to Groq model %s", GROQ_MODEL)
-    response = _query_groq(api_key, prompt)
-    output_text = _extract_response_text(response)
-    style_payload = _safe_json_from_text(output_text)
-    result = _validate_style_payload(style_payload)
-    logger.info("Style analysis result: %s", result)
-    return result
+    logger.info("Generating style analysis using gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    response = model.generate_content(
+        prompt,
+        generation_config={"response_mime_type": "application/json"}
+    )
+    
+    res_text = response.text.strip()
+    logger.info("Received raw response: %s", res_text)
+    
+    try:
+        data = json.loads(res_text)
+    except Exception as e:
+        raise StyleAnalyzerError(f"Failed to parse JSON response from Gemini: {e}")
+
+    # Map old keys for compatibility
+    cuts = float(data.get("cuts_per_minute", 15.0))
+    if cuts <= 0:
+        cuts = 15.0
+    data["average_cut_pace_seconds"] = float(round(60.0 / cuts, 2))
+    data["intensity_preference"] = data.get("pacing", "high").lower()
+    data["visual_triggers"] = [data.get("vibe", "intense").lower()]
+    
+    logger.info("Style analysis complete: %s", data)
+    return data
