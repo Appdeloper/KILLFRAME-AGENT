@@ -2,22 +2,48 @@ import os
 import cv2
 import numpy as np
 
-def cinematic_grade(frame, style):
+def safe_grade(frame, style):
+    """
+    Subtle warm cinematic grade matching Free Fire montage style.
+    Never makes video dark or blue.
+    """
     try:
         f = frame.astype(np.float32)
-        contrast = float(style.get("contrast_level", 1.15))
-        sat_mult = float(style.get("saturation_level", 1.2))
-        f = np.clip((f-128)*contrast+128, 0, 255)
+
+        # Step 1: Very subtle contrast boost only
+        contrast = min(1.2, float(style.get("contrast_level", 1.15)))
+        f = np.clip((f - 128) * contrast + 128, 0, 255)
+
+        # Step 2: Slight warmth — boost reds and greens slightly
+        f[:,:,0] = np.clip(f[:,:,0] * 1.05, 0, 255)  # Red channel boost
+        f[:,:,1] = np.clip(f[:,:,1] * 1.02, 0, 255)  # Green slight boost
+        # Blue stays same — this creates warm look
+
+        # Step 3: Saturation boost in HSV
         hsv = cv2.cvtColor(f.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
-        hsv[:,:,1] = np.clip(hsv[:,:,1]*sat_mult, 0, 255)
+        sat_mult = min(1.25, float(style.get("saturation_level", 1.2)))
+        hsv[:,:,1] = np.clip(hsv[:,:,1] * sat_mult, 0, 255)
         f = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
+
+        # Step 4: VERY subtle vignette — barely visible
         h, w = f.shape[:2]
         Y, X = np.ogrid[:h, :w]
-        v = 1 - 0.12*(((X-w/2)**2+(Y-h/2)**2)/((w/2)**2+(h/2)**2))
-        f = f * np.clip(v,0.88,1.0)[:,:,np.newaxis]
-        return np.clip(f,0,255).astype(np.uint8)
+        v = 1 - 0.10*(((X-w/2)**2+(Y-h/2)**2)/((w/2)**2+(h/2)**2))
+        v = np.clip(v, 0.90, 1.0)  # Maximum 10% darkening at edges only
+        f = f * v[:,:,np.newaxis]
+
+        result = np.clip(f, 0, 255).astype(np.uint8)
+
+        # Safety check: if output is too dark something went wrong
+        if result.mean() < 40:
+            return frame  # Return original if grading went wrong
+
+        return result
     except:
-        return frame
+        return frame  # Always fallback to original
+
+def cinematic_grade(frame, style):
+    return safe_grade(frame, style)
 
 def edit_video(clips, beat_timeline, output_path, style_profile, music_path):
     from moviepy.editor import (VideoFileClip, concatenate_videoclips,

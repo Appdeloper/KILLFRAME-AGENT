@@ -1,9 +1,68 @@
-def select_clips(footage_folder, style_profile):
-    import cv2
-    import numpy as np
-    import os
-    from pathlib import Path
+import cv2
+import numpy as np
+import os
+from pathlib import Path
 
+def is_gameplay_frame(frame):
+    """
+    Returns True only if frame looks like Free Fire gameplay.
+    Returns False for Windows desktop, Start menu, OBS, menus, etc.
+    """
+    h, w = frame.shape[:2]
+
+    # Check 1: Windows taskbar detection
+    # Taskbar is a dark horizontal bar at very bottom of screen
+    bottom_strip = frame[int(h*0.93):h, :]
+    bottom_mean = bottom_strip.mean()
+    # Windows taskbar is very dark grey (30-60 range)
+    if 20 < bottom_mean < 65:
+        return False
+
+    # Check 2: Windows Start menu detection
+    # Start menu has lots of colorful app icons — high color variance in center
+    center = frame[int(h*0.2):int(h*0.8), int(w*0.2):int(w*0.8)]
+    # Start menu has white/light grey background in large portions
+    white_pixels = (center > 200).all(axis=2).sum()
+    white_ratio = white_pixels / (center.shape[0] * center.shape[1])
+    if white_ratio > 0.25:
+        return False
+
+    # Check 3: OBS Studio detection
+    # OBS has very dark background with small colored elements
+    frame_mean = frame.mean()
+    frame_std = frame.std()
+    if frame_mean < 35 and frame_std < 25:
+        return False
+
+    # Check 4: Loading/black screen
+    if frame_mean < 15:
+        return False
+
+    # Check 5: Must have joystick UI (Free Fire mobile has joystick bottom-left)
+    # Bottom left corner should have circular joystick — dark circle on transparent bg
+    # Just check that bottom left isn't pure desktop color
+    bottom_left = frame[int(h*0.7):h, 0:int(w*0.25)]
+    bl_std = bottom_left.std()
+    # Pure desktop/Windows areas have very uniform color
+    if bl_std < 8:
+        return False
+
+    # Check 6: Free Fire HUD detection
+    # Free Fire always has HP bar at bottom center
+    # Check bottom center for orange/green health bar colors
+    hp_area = frame[int(h*0.88):int(h*0.96), int(w*0.3):int(w*0.7)]
+    has_orange = ((hp_area[:,:,2]>150) & (hp_area[:,:,1]>80) & (hp_area[:,:,0]<80)).sum()
+    has_green = ((hp_area[:,:,1]>120) & (hp_area[:,:,2]<80)).sum()
+    has_hud = (has_orange + has_green) > 50
+
+    # If no HUD detected but frame looks like natural outdoor scene — still accept
+    # (gameplay sometimes fills screen during action)
+    outdoor_colors = center.mean(axis=2)
+    has_outdoor = outdoor_colors.mean() > 60
+
+    return has_hud or has_outdoor
+
+def select_clips(footage_folder, style_profile):
     # Find video file
     video_path = None
     for ext in [".mp4",".avi",".mov",".mkv"]:
@@ -18,12 +77,18 @@ def select_clips(footage_folder, style_profile):
         print("[KILLFRAME] No footage found!")
         return []
 
+    # Calculate clips needed for cache and scan
+    output_duration = style_profile.get("output_duration", 60)
+    clip_len = style_profile.get("recommended_clip_length", 2.2)
+    clips_needed = max(15, int(output_duration / clip_len))
+
     # Quick caching check: If temp/kills/ contains clips, we can return them immediately to avoid scanning!
     if os.path.exists("temp/kills"):
         existing_kills = sorted([os.path.join("temp", "kills", f) for f in os.listdir("temp/kills") if f.endswith(".mp4")])
-        if len(existing_kills) >= 8:
-            print(f"[KILLFRAME] Cache hit! Found {len(existing_kills)} already extracted clips in temp/kills/. Skipping 24-minute scan.")
+        if len(existing_kills) >= clips_needed:
+            print(f"[KILLFRAME] Cache hit! Found {len(existing_kills)} already extracted clips in temp/kills/. Skipping scan.")
             return existing_kills
+
 
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -49,6 +114,11 @@ def select_clips(footage_folder, style_profile):
         if not ret:
             break
         if frame_idx % 10 != 0:
+            frame_idx += 1
+            continue
+
+        # Skip non-gameplay frames
+        if not is_gameplay_frame(frame):
             frame_idx += 1
             continue
 
@@ -127,8 +197,9 @@ def select_clips(footage_folder, style_profile):
         return []
 
     scores_only = [s for _, s in all_scores]
-    auto_threshold = np.percentile(scores_only, 82)
-    print(f"[KILLFRAME] Auto threshold: {auto_threshold:.1f} (top 18% of frames)")
+    # Use 78th percentile instead of 82nd to get more clips
+    auto_threshold = np.percentile(scores_only, 78)
+    print(f"[KILLFRAME] Auto threshold: {auto_threshold:.1f} (top 22% of frames)")
 
     # Find kill moments
     kill_moments = [(t,s) for t,s in all_scores if s >= auto_threshold]
@@ -147,9 +218,11 @@ def select_clips(footage_folder, style_profile):
     # If not enough kills lower threshold
     output_duration = style_profile.get("output_duration", 60)
     clip_len = style_profile.get("recommended_clip_length", 2.2)
-    clips_needed = max(8, int(output_duration / clip_len))
+    # Minimum 15 clips always for proper montage
+    clips_needed = max(15, int(output_duration / clip_len))
+    print(f"[KILLFRAME] Need {clips_needed} clips for {output_duration}s montage")
 
-    if len(merged) < 8:
+    if len(merged) < clips_needed:
         print(f"[KILLFRAME] Only {len(merged)} kills — lowering threshold 40% and rescanning...")
         new_thresh = auto_threshold * 0.6
         kill_moments = [(t,s) for t,s in all_scores if s >= new_thresh]
@@ -176,9 +249,12 @@ def select_clips(footage_folder, style_profile):
         out = f"temp/kills/kill_{i:03d}.mp4"
         gpu_cmd = f'ffmpeg -hwaccel cuda -ss {start:.2f} -i "{video_path}" -t 3.5 -c:v h264_nvenc -c:a aac "{out}" -y -loglevel quiet'
         cpu_cmd = f'ffmpeg -ss {start:.2f} -i "{video_path}" -t 3.5 -c:v libx264 -preset ultrafast -c:a aac "{out}" -y -loglevel quiet'
+        copy_cmd = f'ffmpeg -ss {start:.2f} -i "{video_path}" -t 3.5 -c:v copy -c:a aac "{out}" -y -loglevel quiet'
         result = os.system(gpu_cmd)
-        if result != 0 or not os.path.exists(out):
-            os.system(cpu_cmd)
+        if result != 0 or not os.path.exists(out) or os.path.getsize(out) < 1000:
+            result = os.system(cpu_cmd)
+        if result != 0 or not os.path.exists(out) or os.path.getsize(out) < 1000:
+            os.system(copy_cmd)
         if os.path.exists(out) and os.path.getsize(out) > 1000:
             output_clips.append(out)
             print(f"[KILLFRAME] 💀 Kill {i+1}/{len(selected_times)} extracted at {ts:.1f}s")

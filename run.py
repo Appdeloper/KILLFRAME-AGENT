@@ -177,6 +177,14 @@ def confirm(youtube, footage, music, duration, output):
     return go != "q"
 
 def run_agent(youtube, footage, music, duration, output):
+    print("  ⚠️  IMPORTANT: Before generating montage:")
+    print("  • Close Windows Start menu")
+    print("  • Close any desktop windows")
+    print("  • Make sure ONLY your gameplay footage file is used")
+    print("  • Do NOT record your screen while running — use footage FILE only")
+    print()
+    input("  Press ENTER when ready...")
+
     print()
     print("="*55)
     print("  🎬 KILLFRAME-AGENT PIPELINE STARTING...")
@@ -207,6 +215,7 @@ def run_agent(youtube, footage, music, duration, output):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
         bufsize=1
     )
     for line in process.stdout:
@@ -253,6 +262,11 @@ def ask_learning_mode(youtube_url):
         print("  [!] Enter L or S")
 
 def main():
+    # Reconfigure stdout to UTF-8 to prevent encoding errors with console icons
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
     clear()
     banner()
     ask_api_key()
