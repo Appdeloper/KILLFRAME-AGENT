@@ -71,11 +71,17 @@ def main():
     except Exception:
         pass
 
-    # Load API key and validate
-    api_key, provider = get_api_key()
-    if not validate_key(api_key, provider):
-        print("[KILLFRAME] Invalid API key. Please run again and enter a correct key.")
-        sys.exit(1)
+    # Load API key and validate with fallback
+    api_key = None
+    provider = "groq"
+    try:
+        api_key, provider = get_api_key()
+        if not validate_key(api_key, provider):
+            print("[KILLFRAME] [WARNING] Invalid API key. Falling back to cached/default style intelligence.")
+            api_key = "dummy_key"
+    except Exception as e:
+        print(f"[KILLFRAME] [WARNING] API Key retrieval failed ({e}). Falling back to cached/default style intelligence.")
+        api_key = "dummy_key"
 
     # Set active key
     os.environ[f"{provider.upper()}_API_KEY"] = api_key

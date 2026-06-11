@@ -77,18 +77,14 @@ def select_clips(footage_folder, style_profile):
         print("[KILLFRAME] No footage found!")
         return []
 
-    # Calculate clips needed for cache and scan
-    output_duration = style_profile.get("output_duration", 60)
-    clip_len = style_profile.get("recommended_clip_length", 2.2)
-    clips_needed = max(15, int(output_duration / clip_len))
-
-    # Quick caching check: If temp/kills/ contains clips, we can return them immediately to avoid scanning!
+    # Clean temp/kills to avoid stale cache from previous runs and ensure fresh detection
+    import shutil
     if os.path.exists("temp/kills"):
-        existing_kills = sorted([os.path.join("temp", "kills", f) for f in os.listdir("temp/kills") if f.endswith(".mp4")])
-        if len(existing_kills) >= clips_needed:
-            print(f"[KILLFRAME] Cache hit! Found {len(existing_kills)} already extracted clips in temp/kills/. Skipping scan.")
-            return existing_kills
-
+        try:
+            shutil.rmtree("temp/kills")
+        except Exception:
+            pass
+    os.makedirs("temp/kills", exist_ok=True)
 
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -113,7 +109,8 @@ def select_clips(footage_folder, style_profile):
         ret, frame = cap.read()
         if not ret:
             break
-        if frame_idx % 10 != 0:
+        # Sample every 3rd frame to ensure we capture short-lived headshot damage numbers
+        if frame_idx % 3 != 0:
             frame_idx += 1
             continue
 
@@ -152,37 +149,55 @@ def select_clips(footage_folder, style_profile):
         # Signal 2: Flash
         score += max(0, brightness-155) * 2.5
 
-        # Signal 3: Motion
+        # Signal 3: Motion (fast absdiff)
+        diff = 0
         if prev_frame is not None:
             diff = cv2.absdiff(frame, prev_frame).mean()
             score += diff * 2
 
-        # Signal 4: Optical flow
-        if prev_gray is not None:
-            prev_gray_small = cv2.resize(prev_gray, (480, 270))
-            gray_small = cv2.resize(gray, (480, 270))
-            flow = cv2.calcOpticalFlowFarneback(
-                prev_gray_small, gray_small, None, 0.5, 3, 15, 3, 5, 1.2, 0
-            )
-            flow_mag = np.sqrt(flow[...,0]**2+flow[...,1]**2).mean()
-            score += flow_mag * 3
+        # Signal 7: Hit effect (Red Number Detector - Headshots)
+        # Damage numbers appear in the central combat area
+        center_r = frame[int(h*0.35):int(h*0.65), int(w*0.35):int(w*0.65)]
+        hsv_c = cv2.cvtColor(center_r, cv2.COLOR_BGR2HSV)
+        
+        # Red spans low and high hue ranges in HSV
+        lower_red1 = np.array([0, 150, 150])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([170, 150, 150])
+        upper_red2 = np.array([180, 255, 255])
+        
+        mask1 = cv2.inRange(hsv_c, lower_red1, upper_red1)
+        mask2 = cv2.inRange(hsv_c, lower_red2, upper_red2)
+        red_mask = mask1 | mask2
+        
+        r_contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        num_digit_contours = sum(1 for rc in r_contours if 15 <= cv2.contourArea(rc) <= 800)
+        
+        # Apply high weight to frames with multiple red digit shapes (i.e. damage numbers)
+        score += num_digit_contours * 250
 
-        # Signal 5: Recoil
-        gun_zone = frame[int(h*0.5):h, int(w*0.2):int(w*0.8)]
-        if prev_frame is not None:
+        # Optimization: Only calculate expensive signals if there is active motion or screen changes
+        if prev_frame is not None and (diff > 1.0 or num_digit_contours > 0 or red > 50):
+            # Signal 4: Optical flow
+            if prev_gray is not None:
+                prev_gray_small = cv2.resize(prev_gray, (480, 270))
+                gray_small = cv2.resize(gray, (480, 270))
+                flow = cv2.calcOpticalFlowFarneback(
+                    prev_gray_small, gray_small, None, 0.5, 3, 15, 3, 5, 1.2, 0
+                )
+                flow_mag = np.sqrt(flow[...,0]**2+flow[...,1]**2).mean()
+                score += flow_mag * 3
+
+            # Signal 5: Recoil
+            gun_zone = frame[int(h*0.5):h, int(w*0.2):int(w*0.8)]
             prev_gun = prev_frame[int(h*0.5):h, int(w*0.2):int(w*0.8)]
             score += cv2.absdiff(gun_zone, prev_gun).mean()
 
-        # Signal 6: Contours
-        edges = cv2.Canny(gray, 50, 150)
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        big = [c for c in contours if 1500<cv2.contourArea(c)<50000]
-        score += min(50, len(big)*4)
-
-        # Signal 7: Hit effect
-        center_r = frame[int(h*0.3):int(h*0.7), int(w*0.3):int(w*0.7)]
-        red_hit = ((center_r[:,:,2]>160) & (center_r[:,:,0]<60)).sum()
-        score += (red_hit/(center_r.size+1)) * 150
+            # Signal 6: Contours
+            edges = cv2.Canny(gray, 50, 150)
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            big = [c for c in contours if 1500<cv2.contourArea(c)<50000]
+            score += min(50, len(big)*4)
 
         all_scores.append((timestamp, float(score)))
         prev_frame = frame.copy()

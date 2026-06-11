@@ -52,17 +52,24 @@ def edit_video(clips, beat_timeline, output_path, style_profile, music_path):
 
     print(f"[KILLFRAME] Starting professional edit: {len(clips)} clips")
 
-    # Get beat priority order
-    priority = (
-        beat_timeline.get("bass_drops") or
-        beat_timeline.get("strong_beats") or
-        beat_timeline.get("timestamps") or
-        [i*2.5 for i in range(50)]
-    )
+    # Get sync beats from beat_timeline
+    raw_beats = beat_timeline.get("strong_beats") or beat_timeline.get("timestamps") or []
+    if not raw_beats:
+        raw_beats = [i * 2.5 for i in range(50)]
 
-    clip_len = float(style_profile.get("recommended_clip_length", 2.2))
+    # Filter beats to ensure a minimum gap of 1.8 seconds and starts after 1.0s
+    sync_beats = []
+    for b in sorted(raw_beats):
+        if b >= 1.0:
+            if not sync_beats or (b - sync_beats[-1] >= 1.8):
+                sync_beats.append(b)
+
+    # If first sync beat is empty or we have too few, fallback
+    if not sync_beats:
+        sync_beats = [2.5]
+    
+    # Load all clips
     loaded = []
-
     for i, path in enumerate(clips):
         try:
             clip_path = path["path"] if isinstance(path, dict) else path
@@ -72,9 +79,7 @@ def edit_video(clips, beat_timeline, output_path, style_profile, music_path):
             if c.duration < 0.5:
                 c.close()
                 continue
-            trim = min(clip_len, c.duration-0.1)
-            c = c.subclip(0, trim)
-            c = c.resize((1920,1080))
+            c = c.resize((1920, 1080))
             c = c.fl_image(lambda f, s=style_profile: cinematic_grade(f, s))
             loaded.append(c)
             print(f"[KILLFRAME] ✅ Loaded clip {i+1}/{len(clips)}")
@@ -85,18 +90,44 @@ def edit_video(clips, beat_timeline, output_path, style_profile, music_path):
         print("[KILLFRAME] ERROR: No clips could be loaded!")
         raise ValueError("No valid clips loaded for video editing.")
 
-    print(f"[KILLFRAME] Building montage from {len(loaded)} clips...")
+    # Extend sync_beats if we have more clips than beats
+    if len(sync_beats) < len(loaded) + 1:
+        gap = np.mean(np.diff(sync_beats)) if len(sync_beats) > 1 else 2.2
+        while len(sync_beats) < len(loaded) + 1:
+            sync_beats.append(sync_beats[-1] + gap)
 
-    # Build with flash transitions
+    print(f"[KILLFRAME] Building montage from {len(loaded)} clips using beat alignment...")
+
     final_clips = []
     flash_dur = float(style_profile.get("flash_duration", 0.04))
+    
+    # Align and trim each clip
     for i, clip in enumerate(loaded):
-        final_clips.append(clip)
-        if i < len(loaded)-1:
-            flash = ColorClip((1920,1080),[255,255,255],duration=flash_dur)
+        # Calculate the target beat gap
+        gap = sync_beats[i+1] - sync_beats[i]
+        target_dur = gap
+        
+        # Subtract flash duration for transition clips
+        if i < len(loaded) - 1:
+            target_dur -= flash_dur
+
+        # Adjust speed or subclip to match target_dur
+        if target_dur > clip.duration:
+            # Slow down slightly to fit
+            clip_adjusted = clip.fx(vfx.speedx, clip.duration / target_dur)
+        else:
+            # Crop to fit
+            clip_adjusted = clip.subclip(0, target_dur)
+
+        final_clips.append(clip_adjusted)
+
+        # Print log for alignment confirmation
+        montage_action_time = sync_beats[i] - sync_beats[0] + 1.0
+        print(f"[KILLFRAME] Clip {i+1} action aligns to montage time: {montage_action_time:.2f}s (beat drop)")
+
+        if i < len(loaded) - 1:
+            flash = ColorClip((1920, 1080), [255, 255, 255], duration=flash_dur)
             final_clips.append(flash)
-        beat_idx = i % len(priority)
-        print(f"[KILLFRAME] Clip {i+1} → beat drop at {priority[beat_idx]:.2f}s")
 
     final_video = concatenate_videoclips(final_clips, method="compose")
     print(f"[KILLFRAME] Montage duration: {final_video.duration:.1f}s")
@@ -105,12 +136,19 @@ def edit_video(clips, beat_timeline, output_path, style_profile, music_path):
     if music_path and os.path.exists(music_path):
         try:
             audio = AudioFileClip(music_path)
-            if audio.duration < final_video.duration:
-                loops = int(final_video.duration/audio.duration)+1
+            # Shift the audio so that the first beat aligns with the action moment (1.0s) of Clip 0
+            start_audio = sync_beats[0] - 1.0
+            if start_audio < 0:
+                # If beat is too early, start audio at 0 and pad video (should be rare)
+                start_audio = 0.0
+            
+            if audio.duration < start_audio + final_video.duration:
+                loops = int((start_audio + final_video.duration)/audio.duration) + 1
                 audio = concatenate_audioclips([audio]*loops)
-            audio = audio.subclip(0,final_video.duration).volumex(0.85)
-            final_video = final_video.set_audio(audio)
-            print("[KILLFRAME] ✅ Music synced")
+                
+            audio_sub = audio.subclip(start_audio, start_audio + final_video.duration).volumex(0.85)
+            final_video = final_video.set_audio(audio_sub)
+            print(f"[KILLFRAME] ✅ Music beat-synced (audio crop start: {start_audio:.2f}s)")
         except Exception as e:
             print(f"[KILLFRAME] Music error: {e}")
 
@@ -134,8 +172,8 @@ def edit_video(clips, beat_timeline, output_path, style_profile, music_path):
         try: final_video.close()
         except: pass
         try:
-            if 'audio' in locals() and audio:
-                audio.close()
+            if 'audio_sub' in locals() and audio_sub:
+                audio_sub.close()
         except: pass
         for c in loaded:
             try: c.close()
