@@ -1,284 +1,275 @@
 import cv2
 import numpy as np
 import os
+import subprocess
+import sys
 from pathlib import Path
 
-def is_gameplay_frame(frame):
-    """
-    Returns True only if frame looks like Free Fire gameplay.
-    Returns False for Windows desktop, Start menu, OBS, menus, etc.
-    """
-    h, w = frame.shape[:2]
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except:
+    pass
 
-    # Check 1: Windows taskbar detection
-    # Taskbar is a dark horizontal bar at very bottom of screen
-    bottom_strip = frame[int(h*0.93):h, :]
-    bottom_mean = bottom_strip.mean()
-    # Windows taskbar is very dark grey (30-60 range)
-    if 20 < bottom_mean < 65:
-        return False
-
-    # Check 2: Windows Start menu detection
-    # Start menu has lots of colorful app icons — high color variance in center
-    center = frame[int(h*0.2):int(h*0.8), int(w*0.2):int(w*0.8)]
-    # Start menu has white/light grey background in large portions
-    white_pixels = (center > 200).all(axis=2).sum()
-    white_ratio = white_pixels / (center.shape[0] * center.shape[1])
-    if white_ratio > 0.25:
-        return False
-
-    # Check 3: OBS Studio detection
-    # OBS has very dark background with small colored elements
-    frame_mean = frame.mean()
-    frame_std = frame.std()
-    if frame_mean < 35 and frame_std < 25:
-        return False
-
-    # Check 4: Loading/black screen
-    if frame_mean < 15:
-        return False
-
-    # Check 5: Must have joystick UI (Free Fire mobile has joystick bottom-left)
-    # Bottom left corner should have circular joystick — dark circle on transparent bg
-    # Just check that bottom left isn't pure desktop color
-    bottom_left = frame[int(h*0.7):h, 0:int(w*0.25)]
-    bl_std = bottom_left.std()
-    # Pure desktop/Windows areas have very uniform color
-    if bl_std < 8:
-        return False
-
-    # Check 6: Free Fire HUD detection
-    # Free Fire always has HP bar at bottom center
-    # Check bottom center for orange/green health bar colors
-    hp_area = frame[int(h*0.88):int(h*0.96), int(w*0.3):int(w*0.7)]
-    has_orange = ((hp_area[:,:,2]>150) & (hp_area[:,:,1]>80) & (hp_area[:,:,0]<80)).sum()
-    has_green = ((hp_area[:,:,1]>120) & (hp_area[:,:,2]<80)).sum()
-    has_hud = (has_orange + has_green) > 50
-
-    # If no HUD detected but frame looks like natural outdoor scene — still accept
-    # (gameplay sometimes fills screen during action)
-    outdoor_colors = center.mean(axis=2)
-    has_outdoor = outdoor_colors.mean() > 60
-
-    return has_hud or has_outdoor
+def is_gameplay(frame):
+    """Returns True if frame is actual Free Fire gameplay"""
+    try:
+        h, w = frame.shape[:2]
+        # Skip if mostly white (menu/start screen)
+        if frame.mean() > 215:
+            return False
+        # Skip if completely black
+        if frame.mean() < 8:
+            return False
+        # Skip Windows taskbar (very dark bottom strip)
+        bottom = frame[int(h*0.93):h, :]
+        if 15 < bottom.mean() < 58 and bottom.std() < 18:
+            return False
+        # Skip white menus (Windows start menu)
+        center = frame[int(h*0.2):int(h*0.8), int(w*0.2):int(w*0.8)]
+        white_ratio = (center > 205).all(axis=2).mean()
+        if white_ratio > 0.25:
+            return False
+        # Skip solid color screens
+        if center.std() < 8:
+            return False
+        return True
+    except:
+        return True
 
 def select_clips(footage_folder, style_profile):
     # Find video file
     video_path = None
-    for ext in [".mp4",".avi",".mov",".mkv"]:
-        for f in Path(footage_folder).glob(f"*{ext}"):
-            if f.stat().st_size > 100000:
-                video_path = str(f)
-                break
-        if video_path:
+    for ext in ["*.mp4","*.avi","*.mov","*.mkv"]:
+        files = list(Path(footage_folder).glob(ext))
+        files = [f for f in files if f.stat().st_size > 50000]
+        if files:
+            video_path = str(max(files, key=lambda f: f.stat().st_size))
             break
 
     if not video_path:
-        print("[KILLFRAME] No footage found!")
+        print("[KILLFRAME] [ERROR] No footage found in folder")
         return []
 
-    # Clean temp/kills to avoid stale cache from previous runs and ensure fresh detection
-    import shutil
-    if os.path.exists("temp/kills"):
-        try:
-            shutil.rmtree("temp/kills")
-        except Exception:
-            pass
-    os.makedirs("temp/kills", exist_ok=True)
-
     cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"[KILLFRAME] [ERROR] Cannot open: {video_path}")
+        return []
+
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total_frames / fps
-    print(f"[KILLFRAME] Footage: {duration/60:.1f}min | {total_frames} frames | {fps:.0f}fps")
+    duration_min = duration / 60
 
-    # Use learned style for threshold
-    learned_pacing = style_profile.get("pacing", "fast")
-    print(f"[KILLFRAME] Using learned pacing: {learned_pacing}")
+    print(f"[KILLFRAME] ----------------------------------")
+    print(f"[KILLFRAME]   KILL SCANNER")
+    print(f"[KILLFRAME]   File     : {Path(video_path).name}")
+    print(f"[KILLFRAME]   Duration : {duration_min:.1f} minutes")
+    print(f"[KILLFRAME]   Frames   : {total_frames}")
+    print(f"[KILLFRAME]   FPS      : {fps:.0f}")
+    print(f"[KILLFRAME] ----------------------------------")
+
+    # Adaptive frame skip based on duration
+    if duration < 120:
+        skip = 6
+    elif duration < 300:
+        skip = 8
+    else:
+        skip = 10
 
     all_scores = []
     frame_idx = 0
     prev_frame = None
     prev_gray = None
-    prev_brightness = 0
     last_progress = -1
 
-    # First pass — collect all scores
-    print("[KILLFRAME] Pass 1/2: Collecting frame scores...")
+    print("[KILLFRAME] Scanning footage...")
+
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        # Sample every 3rd frame to ensure we capture short-lived headshot damage numbers
-        if frame_idx % 3 != 0:
+
+        if frame_idx % skip != 0:
             frame_idx += 1
             continue
-
-        # Skip non-gameplay frames
-        if not is_gameplay_frame(frame):
-            frame_idx += 1
-            continue
-
-        progress = int((frame_idx / total_frames) * 100)
-        if progress % 10 == 0 and progress != last_progress:
-            print(f"[KILLFRAME] Scanning: {progress}%")
-            last_progress = progress
 
         timestamp = frame_idx / fps
-        if timestamp < 20:
+
+        # Show real progress
+        progress = int((frame_idx / max(total_frames,1)) * 100)
+        if progress % 5 == 0 and progress != last_progress:
+            kills_found = len([s for _,s in all_scores if s > 25])
+            print(f"[KILLFRAME] {progress:3d}% | {timestamp/60:.1f}min | Kills: {kills_found}")
+            last_progress = progress
+
+        # Skip first 15 seconds and non-gameplay
+        if timestamp < 15:
+            frame_idx += 1
+            continue
+        if not is_gameplay(frame):
             frame_idx += 1
             continue
 
-        # Skip bad frames
-        center = frame[int(frame.shape[0]*0.2):int(frame.shape[0]*0.8),
-                      int(frame.shape[1]*0.2):int(frame.shape[1]*0.8)]
-        if center.std() < 12:
-            frame_idx += 1
-            continue
-
-        score = 0
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        brightness = frame.mean()
         h, w = frame.shape[:2]
+        score = 0.0
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Signal 1: Kill feed
-        kz = frame[0:int(h*0.14), int(w*0.70):w]
-        red = ((kz[:,:,2]>140) & (kz[:,:,0]<80)).sum()
-        score += (red/(kz.shape[0]*kz.shape[1]+1)) * 300
+        # SIGNAL 1: Kill feed red pixels top-right
+        try:
+            kz = frame[0:int(h*0.14), int(w*0.70):w]
+            red = ((kz[:,:,2].astype(int)-kz[:,:,0].astype(int)>80) & (kz[:,:,2]>130)).sum()
+            kf_score = (red / max(kz.shape[0]*kz.shape[1],1)) * 400
+            score += kf_score
+            if kf_score > 8:
+                score *= 1.8
+        except:
+            pass
 
-        # Signal 2: Flash
-        score += max(0, brightness-155) * 2.5
+        # SIGNAL 2: Screen flash
+        brightness = float(frame.mean())
+        score += max(0, brightness - 148) * 3.5
 
-        # Signal 3: Motion (fast absdiff)
-        diff = 0
+        # SIGNAL 3: Frame motion
         if prev_frame is not None:
-            diff = cv2.absdiff(frame, prev_frame).mean()
-            score += diff * 2
+            try:
+                diff = cv2.absdiff(frame, prev_frame).mean()
+                score += diff * 2.5
+            except:
+                pass
 
-        # Signal 7: Hit effect (Red Number Detector - Headshots)
-        # Damage numbers appear in the central combat area
-        center_r = frame[int(h*0.35):int(h*0.65), int(w*0.35):int(w*0.65)]
-        hsv_c = cv2.cvtColor(center_r, cv2.COLOR_BGR2HSV)
-        
-        # Red spans low and high hue ranges in HSV
-        lower_red1 = np.array([0, 150, 150])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([170, 150, 150])
-        upper_red2 = np.array([180, 255, 255])
-        
-        mask1 = cv2.inRange(hsv_c, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv_c, lower_red2, upper_red2)
-        red_mask = mask1 | mask2
-        
-        r_contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        num_digit_contours = sum(1 for rc in r_contours if 15 <= cv2.contourArea(rc) <= 800)
-        
-        # Apply high weight to frames with multiple red digit shapes (i.e. damage numbers)
-        score += num_digit_contours * 250
-
-        # Optimization: Only calculate expensive signals if there is active motion or screen changes
-        if prev_frame is not None and (diff > 1.0 or num_digit_contours > 0 or red > 50):
-            # Signal 4: Optical flow
-            if prev_gray is not None:
-                prev_gray_small = cv2.resize(prev_gray, (480, 270))
-                gray_small = cv2.resize(gray, (480, 270))
+        # SIGNAL 4: Optical flow
+        if prev_gray is not None:
+            try:
                 flow = cv2.calcOpticalFlowFarneback(
-                    prev_gray_small, gray_small, None, 0.5, 3, 15, 3, 5, 1.2, 0
+                    prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
                 )
-                flow_mag = np.sqrt(flow[...,0]**2+flow[...,1]**2).mean()
-                score += flow_mag * 3
+                score += np.sqrt(flow[...,0]**2+flow[...,1]**2).mean() * 3.5
+            except:
+                pass
 
-            # Signal 5: Recoil
-            gun_zone = frame[int(h*0.5):h, int(w*0.2):int(w*0.8)]
-            prev_gun = prev_frame[int(h*0.5):h, int(w*0.2):int(w*0.8)]
-            score += cv2.absdiff(gun_zone, prev_gun).mean()
+        # SIGNAL 5: Gun recoil
+        if prev_frame is not None:
+            try:
+                gz = frame[int(h*0.5):h, int(w*0.2):int(w*0.8)]
+                pgz = prev_frame[int(h*0.5):h, int(w*0.2):int(w*0.8)]
+                score += cv2.absdiff(gz, pgz).mean() * 2.0
+            except:
+                pass
 
-            # Signal 6: Contours
-            edges = cv2.Canny(gray, 50, 150)
+        # SIGNAL 6: Enemy contours
+        try:
+            edges = cv2.Canny(gray, 45, 140)
             contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            big = [c for c in contours if 1500<cv2.contourArea(c)<50000]
-            score += min(50, len(big)*4)
+            big = [c for c in contours if 1200 < cv2.contourArea(c) < 60000]
+            score += min(60.0, len(big)*5.0)
+        except:
+            pass
+
+        # SIGNAL 7: Red hit effect center
+        try:
+            cz = frame[int(h*0.25):int(h*0.75), int(w*0.25):int(w*0.75)]
+            rh = ((cz[:,:,2].astype(int)-cz[:,:,0].astype(int)>100) & (cz[:,:,2]>150)).sum()
+            score += (rh / max(cz.shape[0]*cz.shape[1],1)) * 200
+        except:
+            pass
 
         all_scores.append((timestamp, float(score)))
         prev_frame = frame.copy()
         prev_gray = gray.copy()
-        prev_brightness = brightness
         frame_idx += 1
 
     cap.release()
 
     if not all_scores:
-        print("[KILLFRAME] No frames analyzed — returning empty")
+        print("[KILLFRAME] [ERROR] No frames analyzed")
         return []
 
-    scores_only = [s for _, s in all_scores]
-    # Use 78th percentile instead of 82nd to get more clips
-    auto_threshold = np.percentile(scores_only, 78)
-    print(f"[KILLFRAME] Auto threshold: {auto_threshold:.1f} (top 22% of frames)")
+    scores_only = [s for _,s in all_scores]
+    print(f"\n[KILLFRAME] Scan complete: {len(all_scores)} frames")
+    print(f"[KILLFRAME] Score range: {min(scores_only):.1f} — {max(scores_only):.1f}")
 
-    # Find kill moments
-    kill_moments = [(t,s) for t,s in all_scores if s >= auto_threshold]
-
-    # Deduplicate kills within 2 seconds
-    merged = []
-    for ts, sc in sorted(kill_moments):
-        if not merged or ts - merged[-1][0] > 2.0:
-            merged.append([ts, sc])
-        elif sc > merged[-1][1]:
-            merged[-1] = [ts, sc]
-
-    merged.sort(key=lambda x: x[1], reverse=True)
-    print(f"[KILLFRAME] Kill moments found: {len(merged)}")
-
-    # If not enough kills lower threshold
-    output_duration = style_profile.get("output_duration", 60)
-    clip_len = style_profile.get("recommended_clip_length", 2.2)
-    # Minimum 15 clips always for proper montage
+    # Calculate clips needed based on output duration
+    output_duration = int(style_profile.get("output_duration", 60))
+    clip_len = float(style_profile.get("recommended_clip_length", 2.5))
     clips_needed = max(15, int(output_duration / clip_len))
-    print(f"[KILLFRAME] Need {clips_needed} clips for {output_duration}s montage")
+    print(f"[KILLFRAME] Need {clips_needed} clips for {output_duration}s output")
 
-    if len(merged) < clips_needed:
-        print(f"[KILLFRAME] Only {len(merged)} kills — lowering threshold 40% and rescanning...")
-        new_thresh = auto_threshold * 0.6
-        kill_moments = [(t,s) for t,s in all_scores if s >= new_thresh]
+    # Adaptive threshold — keep lowering until enough clips found
+    percentile = 82
+    merged = []
+    for attempt in range(6):
+        threshold = np.percentile(scores_only, percentile)
+        kills = [(t,s) for t,s in all_scores if s >= threshold]
         merged = []
-        for ts, sc in sorted(kill_moments):
-            if not merged or ts - merged[-1][0] > 1.5:
+        for ts, sc in sorted(kills, key=lambda x: x[0]):
+            if not merged or ts - merged[-1][0] > 1.8:
                 merged.append([ts, sc])
             elif sc > merged[-1][1]:
                 merged[-1] = [ts, sc]
-        merged.sort(key=lambda x: x[1], reverse=True)
-        print(f"[KILLFRAME] After rescan: {len(merged)} kills")
+        print(f"[KILLFRAME] Threshold {threshold:.1f} (p{percentile}) -> {len(merged)} kills")
+        if len(merged) >= clips_needed:
+            break
+        percentile -= 8
 
+    if not merged:
+        print("[KILLFRAME] Using evenly spaced segments as fallback")
+        merged = [(i*(duration/20), 1.0) for i in range(1, 21) if i*(duration/20) < duration]
+
+    # Sort by score — best kills first
+    merged.sort(key=lambda x: x[1], reverse=True)
     selected = merged[:clips_needed]
     selected_times = sorted([t for t,_ in selected])
-    print(f"[KILLFRAME] Selected top {len(selected_times)} clips for {output_duration}s montage")
+
+    print(f"[KILLFRAME] Selected {len(selected_times)} kill moments")
 
     # Extract clips
-    print("[KILLFRAME] Pass 2/2: Extracting kill clips...")
     os.makedirs("temp/kills", exist_ok=True)
+    for old in Path("temp/kills").glob("*.mp4"):
+        old.unlink()
+
     output_clips = []
+    print(f"[KILLFRAME] Extracting {len(selected_times)} clips...")
 
     for i, ts in enumerate(selected_times):
-        start = max(0, ts - 1.0)
+        kill_offset = 1.0
+        clip_start = max(0.0, ts - kill_offset)
+        clip_duration = kill_offset + 2.5
         out = f"temp/kills/kill_{i:03d}.mp4"
-        gpu_cmd = f'ffmpeg -hwaccel cuda -ss {start:.2f} -i "{video_path}" -t 3.5 -c:v h264_nvenc -c:a aac "{out}" -y -loglevel quiet'
-        cpu_cmd = f'ffmpeg -ss {start:.2f} -i "{video_path}" -t 3.5 -c:v libx264 -preset ultrafast -c:a aac "{out}" -y -loglevel quiet'
-        copy_cmd = f'ffmpeg -ss {start:.2f} -i "{video_path}" -t 3.5 -c:v copy -c:a aac "{out}" -y -loglevel quiet'
-        result = os.system(gpu_cmd)
-        if result != 0 or not os.path.exists(out) or os.path.getsize(out) < 1000:
-            result = os.system(cpu_cmd)
-        if result != 0 or not os.path.exists(out) or os.path.getsize(out) < 1000:
-            os.system(copy_cmd)
-        if os.path.exists(out) and os.path.getsize(out) > 1000:
-            output_clips.append(out)
-            print(f"[KILLFRAME] 💀 Kill {i+1}/{len(selected_times)} extracted at {ts:.1f}s")
-        else:
-            print(f"[KILLFRAME] Failed clip at {ts:.1f}s — skipping")
 
-    print(f"[KILLFRAME] ══════════════════════════════════")
-    print(f"[KILLFRAME] SCAN COMPLETE")
-    print(f"[KILLFRAME] Kills detected : {len(merged)}")
-    print(f"[KILLFRAME] Clips extracted: {len(output_clips)}")
-    print(f"[KILLFRAME] ══════════════════════════════════")
+        success = False
+        cmds = [
+            f'ffmpeg -hwaccel cuda -ss {clip_start:.3f} -i "{video_path}" -t {clip_duration:.3f} -c:v h264_nvenc -b:v 8000k -c:a aac "{out}" -y -loglevel quiet',
+            f'ffmpeg -ss {clip_start:.3f} -i "{video_path}" -t {clip_duration:.3f} -c:v libx264 -preset ultrafast -b:v 6000k -c:a aac "{out}" -y -loglevel quiet',
+            f'ffmpeg -ss {clip_start:.3f} -i "{video_path}" -t {clip_duration:.3f} -c copy "{out}" -y -loglevel quiet',
+        ]
+        for cmd in cmds:
+            result = os.system(cmd)
+            if result == 0 and os.path.exists(out) and os.path.getsize(out) > 5000:
+                cap_check = cv2.VideoCapture(out)
+                ret, f = cap_check.read()
+                cap_check.release()
+                if ret and f is not None and f.mean() > 5:
+                    output_clips.append({
+                        "path": out,
+                        "kill_offset": kill_offset,
+                        "timestamp": ts,
+                        "score": next((s for t,s in selected if abs(t-ts)<0.5), 0)
+                    })
+                    print(f"[KILLFRAME] [OK] Kill {i+1:03d}/{len(selected_times)} | {ts:.1f}s")
+                    success = True
+                    break
+        if not success:
+            print(f"[KILLFRAME] [ERROR] Failed: {ts:.1f}s")
+
+    if output_clips:
+        try:
+            from modules.validator import validate_clips
+            output_clips = validate_clips(output_clips)
+        except Exception as e:
+            print(f"[KILLFRAME] Clip validation warning: {e}")
+
+    print(f"[KILLFRAME] ----------------------------------")
+    print(f"[KILLFRAME]   Kills detected  : {len(merged)}")
+    print(f"[KILLFRAME]   Clips extracted : {len(output_clips)}")
+    print(f"[KILLFRAME] ----------------------------------")
     return output_clips

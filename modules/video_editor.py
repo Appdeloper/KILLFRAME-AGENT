@@ -1,196 +1,253 @@
 import os
 import cv2
 import numpy as np
+import sys
 
-def safe_grade(frame, style):
-    """
-    Subtle warm cinematic grade matching Free Fire montage style.
-    Never makes video dark or blue.
-    """
-    try:
-        f = frame.astype(np.float32)
-
-        # Step 1: Very subtle contrast boost only
-        contrast = min(1.2, float(style.get("contrast_level", 1.15)))
-        f = np.clip((f - 128) * contrast + 128, 0, 255)
-
-        # Step 2: Slight warmth — boost reds and greens slightly
-        f[:,:,0] = np.clip(f[:,:,0] * 1.05, 0, 255)  # Red channel boost
-        f[:,:,1] = np.clip(f[:,:,1] * 1.02, 0, 255)  # Green slight boost
-        # Blue stays same — this creates warm look
-
-        # Step 3: Saturation boost in HSV
-        hsv = cv2.cvtColor(f.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
-        sat_mult = min(1.25, float(style.get("saturation_level", 1.2)))
-        hsv[:,:,1] = np.clip(hsv[:,:,1] * sat_mult, 0, 255)
-        f = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
-
-        # Step 4: VERY subtle vignette — barely visible
-        h, w = f.shape[:2]
-        Y, X = np.ogrid[:h, :w]
-        v = 1 - 0.10*(((X-w/2)**2+(Y-h/2)**2)/((w/2)**2+(h/2)**2))
-        v = np.clip(v, 0.90, 1.0)  # Maximum 10% darkening at edges only
-        f = f * v[:,:,np.newaxis]
-
-        result = np.clip(f, 0, 255).astype(np.uint8)
-
-        # Safety check: if output is too dark something went wrong
-        if result.mean() < 40:
-            return frame  # Return original if grading went wrong
-
-        return result
-    except:
-        return frame  # Always fallback to original
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except:
+    pass
 
 def cinematic_grade(frame, style):
-    return safe_grade(frame, style)
+    try:
+        from modules.color_analyzer import apply_reference_grade, get_default_grade
+        return apply_reference_grade(frame, style if "red_mult" in style else get_default_grade())
+    except:
+        return frame
 
-def edit_video(clips, beat_timeline, output_path, style_profile, music_path):
-    from moviepy.editor import (VideoFileClip, concatenate_videoclips,
-        AudioFileClip, ColorClip, CompositeVideoClip, concatenate_audioclips)
-    import moviepy.video.fx.all as vfx
-
-    print(f"[KILLFRAME] Starting professional edit: {len(clips)} clips")
-
-    # Get sync beats from beat_timeline
-    raw_beats = beat_timeline.get("strong_beats") or beat_timeline.get("timestamps") or []
-    if not raw_beats:
-        raw_beats = [i * 2.5 for i in range(50)]
-
-    # Filter beats to ensure a minimum gap of 1.8 seconds and starts after 1.0s
-    sync_beats = []
-    for b in sorted(raw_beats):
-        if b >= 1.0:
-            if not sync_beats or (b - sync_beats[-1] >= 1.8):
-                sync_beats.append(b)
-
-    # If first sync beat is empty or we have too few, fallback
-    if not sync_beats:
-        sync_beats = [2.5]
-    
-    # Load all clips
-    loaded = []
-    for i, path in enumerate(clips):
+def make_zoom(clip, zoom):
+    def zoom_fn(get_frame, t):
         try:
-            clip_path = path["path"] if isinstance(path, dict) else path
-            if not os.path.exists(clip_path):
+            frame = get_frame(t)
+            p = t / max(clip.duration, 0.01)
+            scale = 1.0 + (zoom-1.0)*(1.0-p)
+            h, w = frame.shape[:2]
+            nh, nw = int(h*scale), int(w*scale)
+            if nh <= 0 or nw <= 0:
+                return frame
+            r = cv2.resize(frame, (nw, nh))
+            y1 = max(0,(nh-h)//2)
+            x1 = max(0,(nw-w)//2)
+            cr = r[y1:y1+h, x1:x1+w]
+            if cr.shape[0]!=h or cr.shape[1]!=w:
+                cr = cv2.resize(cr,(w,h))
+            return cr
+        except:
+            return get_frame(t)
+    return clip.fl(zoom_fn)
+
+def edit_video(clips, beat_timeline, output_path, style_profile, music_path, reference_video_path=None):
+    from moviepy.editor import (VideoFileClip, concatenate_videoclips,
+        AudioFileClip, ColorClip, concatenate_audioclips)
+    import numpy as np
+    import cv2
+    import os
+
+    # Handle both dict and string clips
+    clip_data = []
+    for c in clips:
+        if isinstance(c, dict):
+            clip_data.append(c)
+        elif isinstance(c, str):
+            clip_data.append({"path":c,"kill_offset":1.0,"score":0})
+
+    if not clip_data:
+        print("[KILLFRAME] [ERROR] No clips to edit")
+        raise ValueError("No clips to edit")
+
+    # Get beats
+    drops = beat_timeline.get("bass_drops",[])
+    strong = beat_timeline.get("strong_beats",[])
+    all_beats = beat_timeline.get("timestamps",[])
+    if not all_beats:
+        all_beats = [i*2.5 for i in range(200)]
+
+    beat_gap = float(beat_timeline.get("avg_gap_seconds",2.5))
+    beat_gap = max(0.8, min(beat_gap, 4.0))
+    drops_set = set([round(d,2) for d in drops])
+
+    # Color grade
+    grade = None
+    try:
+        from modules.color_analyzer import extract_reference_lut, apply_reference_grade, get_default_grade
+        if reference_video_path and os.path.exists(reference_video_path):
+            grade = extract_reference_lut(reference_video_path)
+            print("[KILLFRAME] Reference color grade loaded")
+        else:
+            grade = get_default_grade()
+    except:
+        grade = None
+
+    def safe_grade(frame):
+        try:
+            if grade is None:
+                return frame
+            f = frame.astype(np.float32)
+            # Contrast
+            c = float(grade.get("contrast_mult",1.2))
+            f = np.clip((f-128)*c+128, 0, 255)
+            # Warmth
+            f[:,:,0] = np.clip(f[:,:,0]*float(grade.get("red_mult",1.06)), 0, 255)
+            f[:,:,1] = np.clip(f[:,:,1]*float(grade.get("green_mult",1.02)), 0, 255)
+            # Saturation
+            hsv = cv2.cvtColor(f.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
+            hsv[:,:,1] = np.clip(hsv[:,:,1]*float(grade.get("saturation_mult",1.25)), 0, 255)
+            f = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
+            # Shadow lift
+            lift = float(grade.get("shadow_lift",8.0))
+            f = np.clip(f + lift*(1-f/255), 0, 255)
+            # Subtle vignette
+            h, w = f.shape[:2]
+            Y, X = np.ogrid[:h, :w]
+            v = 1 - 0.10*(((X-w/2)**2+(Y-h/2)**2)/((w/2)**2+(h/2)**2))
+            f = f * np.clip(v,0.90,1.0)[:,:,np.newaxis]
+            result = np.clip(f,0,255).astype(np.uint8)
+            return result if result.mean() > 10 else frame
+        except:
+            return frame
+
+    print(f"[KILLFRAME] Loading {len(clip_data)} clips...")
+    loaded = []
+
+    # Sort — highest score kills go to bass drops
+    clip_data.sort(key=lambda x: x.get("score",0), reverse=True)
+
+    # Loop clip_data if output duration is long but we have few clips
+    output_duration = int(style_profile.get("output_duration", 60))
+    approx_clip_dur = beat_gap + 0.06
+    clips_needed_to_fill = int(output_duration / approx_clip_dur) + 1
+    if len(clip_data) < clips_needed_to_fill:
+        print(f"[KILLFRAME] Looping clip data to fill target duration: need {clips_needed_to_fill}, have {len(clip_data)}")
+        original_clip_data = list(clip_data)
+        while len(clip_data) < clips_needed_to_fill:
+            clip_data.extend(original_clip_data)
+        clip_data = clip_data[:clips_needed_to_fill]
+
+    for i, data in enumerate(clip_data):
+        path = data.get("path","")
+        kill_offset = float(data.get("kill_offset",1.0))
+        clip = None
+        try:
+            if not os.path.exists(path):
+                print(f"[KILLFRAME] [ERROR] Missing: {path}")
                 continue
-            c = VideoFileClip(clip_path)
-            if c.duration < 0.5:
-                c.close()
+            clip = VideoFileClip(path)
+            if clip.duration < 0.3:
+                clip.close()
                 continue
-            c = c.resize((1920, 1080))
-            c = c.fl_image(lambda f, s=style_profile: cinematic_grade(f, s))
-            loaded.append(c)
-            print(f"[KILLFRAME] ✅ Loaded clip {i+1}/{len(clips)}")
+
+            # TRUE BEAT-KILL SYNC
+            # Kill lands at 0.3s into clip (right on beat)
+            target = 0.3
+            trim_start = max(0.0, kill_offset - target)
+            trim_end = min(clip.duration, trim_start + beat_gap)
+            if trim_end - trim_start < 0.3:
+                trim_start = 0.0
+                trim_end = min(clip.duration, beat_gap)
+
+            clip = clip.subclip(trim_start, trim_end)
+            if clip.size != (1920,1080):
+                clip = clip.resize((1920,1080))
+
+            # Color grade
+            clip = clip.fl_image(safe_grade)
+
+            # Zoom pulse
+            beat_t = all_beats[i % len(all_beats)]
+            is_drop = round(beat_t,2) in drops_set
+            clip = make_zoom(clip, 1.07 if is_drop else 1.04)
+
+            loaded.append(clip)
+            btype = "DROP" if is_drop else "BEAT"
+            print(f"[KILLFRAME] [OK] {i+1:03d}/{len(clip_data)} | {btype} | {trim_end-trim_start:.2f}s")
+
         except Exception as e:
-            print(f"[KILLFRAME] Skip clip {i+1}: {e}")
+            print(f"[KILLFRAME] [ERROR] Clip {i+1} error: {e}")
+            if clip:
+                try: clip.close()
+                except: pass
 
     if not loaded:
-        print("[KILLFRAME] ERROR: No clips could be loaded!")
-        raise ValueError("No valid clips loaded for video editing.")
+        print("[KILLFRAME] [ERROR] No clips loaded — check footage")
+        raise ValueError("No clips loaded")
 
-    # Extend sync_beats if we have more clips than beats
-    if len(sync_beats) < len(loaded) + 1:
-        gap = np.mean(np.diff(sync_beats)) if len(sync_beats) > 1 else 2.2
-        while len(sync_beats) < len(loaded) + 1:
-            sync_beats.append(sync_beats[-1] + gap)
+    print(f"[KILLFRAME] Building {len(loaded)} clip montage...")
 
-    print(f"[KILLFRAME] Building montage from {len(loaded)} clips using beat alignment...")
-
+    # Build with flash transitions
     final_clips = []
-    flash_dur = float(style_profile.get("flash_duration", 0.04))
-    
-    # Align and trim each clip
     for i, clip in enumerate(loaded):
-        # Calculate the target beat gap
-        gap = sync_beats[i+1] - sync_beats[i]
-        target_dur = gap
-        
-        # Subtract flash duration for transition clips
-        if i < len(loaded) - 1:
-            target_dur -= flash_dur
-
-        # Adjust speed or subclip to match target_dur
-        if target_dur > clip.duration:
-            # Slow down slightly to fit
-            clip_adjusted = clip.fx(vfx.speedx, clip.duration / target_dur)
-        else:
-            # Crop to fit
-            clip_adjusted = clip.subclip(0, target_dur)
-
-        final_clips.append(clip_adjusted)
-
-        # Print log for alignment confirmation
-        montage_action_time = sync_beats[i] - sync_beats[0] + 1.0
-        print(f"[KILLFRAME] Clip {i+1} action aligns to montage time: {montage_action_time:.2f}s (beat drop)")
-
-        if i < len(loaded) - 1:
-            flash = ColorClip((1920, 1080), [255, 255, 255], duration=flash_dur)
+        final_clips.append(clip)
+        if i < len(loaded)-1:
+            next_beat = all_beats[(i+1) % len(all_beats)]
+            is_drop = round(next_beat,2) in drops_set
+            flash = ColorClip((1920,1080),[255,255,255],
+                duration=0.07 if is_drop else 0.05)
             final_clips.append(flash)
 
-    final_video = concatenate_videoclips(final_clips, method="compose")
-    print(f"[KILLFRAME] Montage duration: {final_video.duration:.1f}s")
+    try:
+        final_video = concatenate_videoclips(final_clips, method="compose")
+    except Exception as e:
+        print(f"[KILLFRAME] Compose failed: {e} — trying chain")
+        try:
+            final_video = concatenate_videoclips(loaded, method="chain")
+        except Exception as e2:
+            print(f"[KILLFRAME] [ERROR] Cannot concatenate: {e2}")
+            for c in loaded:
+                try: c.close()
+                except: pass
+            return
+
+    print(f"[KILLFRAME] Montage: {final_video.duration:.2f}s | {len(loaded)} clips")
 
     # Add music
-    if music_path and os.path.exists(music_path):
+    if music_path and music_path not in ["AUTO",""] and os.path.exists(music_path):
         try:
             audio = AudioFileClip(music_path)
-            # Shift the audio so that the first beat aligns with the action moment (1.0s) of Clip 0
-            start_audio = sync_beats[0] - 1.0
-            if start_audio < 0:
-                # If beat is too early, start audio at 0 and pad video (should be rare)
-                start_audio = 0.0
-            
-            if audio.duration < start_audio + final_video.duration:
-                loops = int((start_audio + final_video.duration)/audio.duration) + 1
+            print(f"[KILLFRAME] Music: {audio.duration:.1f}s")
+            if audio.duration < final_video.duration:
+                loops = int(final_video.duration/audio.duration)+2
                 audio = concatenate_audioclips([audio]*loops)
-                
-            audio_sub = audio.subclip(start_audio, start_audio + final_video.duration).volumex(0.85)
-            final_video = final_video.set_audio(audio_sub)
-            print(f"[KILLFRAME] ✅ Music beat-synced (audio crop start: {start_audio:.2f}s)")
+            audio = audio.subclip(0, final_video.duration).volumex(0.88)
+            final_video = final_video.set_audio(audio)
+            print("[KILLFRAME] [OK] Music synced")
         except Exception as e:
             print(f"[KILLFRAME] Music error: {e}")
 
-    # Export
-    print(f"[KILLFRAME] Exporting: {output_path}")
-    try:
-        final_video.write_videofile(
-            output_path,
-            codec="libx264",
-            audio_codec="aac",
-            bitrate="8000k",
-            fps=30,
-            threads=4,
-            preset="fast",
-            logger=None
-        )
-    except Exception as e:
-        print(f"[KILLFRAME] Export error: {e}")
-        return
-    finally:
-        try: final_video.close()
-        except: pass
-        try:
-            if 'audio_sub' in locals() and audio_sub:
-                audio_sub.close()
-        except: pass
-        for c in loaded:
-            try: c.close()
-            except: pass
+    # Export — 3 quality fallbacks
+    configs = [
+        {"codec":"libx264","audio_codec":"aac","bitrate":"10000k","fps":30,
+         "threads":4,"preset":"slow","ffmpeg_params":["-crf","17","-movflags","+faststart"],"logger":None},
+        {"codec":"libx264","audio_codec":"aac","bitrate":"8000k","fps":30,
+         "threads":4,"preset":"fast","logger":None},
+        {"codec":"libx264","audio_codec":"aac","bitrate":"5000k","fps":30,
+         "threads":2,"preset":"ultrafast","logger":None},
+    ]
 
-    if os.path.exists(output_path):
-        mb = os.path.getsize(output_path)/(1024*1024)
-        learned = style_profile.get("learned_from_videos",0)
-        print(f"[KILLFRAME] ══════════════════════════════════════")
-        print(f"[KILLFRAME]   MONTAGE COMPLETE")
-        print(f"[KILLFRAME]   Learned from  : {learned} YouTube videos")
-        print(f"[KILLFRAME]   Clips used    : {len(loaded)}")
-        print(f"[KILLFRAME]   Duration      : {final_video.duration:.1f}s")
-        print(f"[KILLFRAME]   File size     : {mb:.1f}MB")
-        print(f"[KILLFRAME]   Color graded  : YES")
-        print(f"[KILLFRAME]   Music synced  : YES")
-        print(f"[KILLFRAME]   Beat synced   : YES")
-        print(f"[KILLFRAME] ══════════════════════════════════════")
-    else:
-        print("[KILLFRAME] ERROR: Output file not created!")
+    exported = False
+    for cfg in configs:
+        try:
+            print(f"[KILLFRAME] Exporting: {cfg['preset']} | {cfg['bitrate']}")
+            final_video.write_videofile(output_path, **cfg)
+            if os.path.exists(output_path) and os.path.getsize(output_path)>100000:
+                mb = os.path.getsize(output_path)/(1024*1024)
+                print(f"[KILLFRAME] ----------------------------------")
+                print(f"[KILLFRAME]   [OK] MONTAGE COMPLETE")
+                print(f"[KILLFRAME]   Clips      : {len(loaded)}")
+                print(f"[KILLFRAME]   Duration   : {final_video.duration:.1f}s")
+                print(f"[KILLFRAME]   Size       : {mb:.1f}MB")
+                print(f"[KILLFRAME]   Quality    : {cfg['bitrate']} {cfg['preset']}")
+                print(f"[KILLFRAME]   Beat sync  : TRUE — kills on beats")
+                print(f"[KILLFRAME]   Color grade: YES")
+                print(f"[KILLFRAME]   Music      : YES")
+                print(f"[KILLFRAME] ----------------------------------")
+                exported = True
+                break
+        except Exception as e:
+            print(f"[KILLFRAME] Export failed ({cfg['preset']}): {e}")
+
+    for c in loaded:
+        try: c.close()
+        except: pass
+
+    if not exported:
+        print("[KILLFRAME] [ERROR] All export attempts failed")

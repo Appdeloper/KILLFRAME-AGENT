@@ -23,37 +23,38 @@ def banner():
     print()
 
 def ask_api_key():
+    # STEP 1 — API KEY (OPTIONAL)
     load_dotenv(ENV_FILE)
-    keys = ["GEMINI_API_KEY","OPENAI_API_KEY","GROQ_API_KEY","ANTHROPIC_API_KEY"]
-    for k in keys:
-        v = os.getenv(k)
-        if v and len(v) > 10:
-            provider = k.replace("_API_KEY","").lower()
-            print(f"  [✅] API Key found: {provider.upper()}")
-            return v
-    print("  [🔑] No API key found.")
-    print()
-    print("  Get a FREE key at:")
-    print("  • Gemini  → aistudio.google.com  (starts with AIza)")
-    print("  • Groq    → console.groq.com     (starts with gsk_)")
-    print()
-    while True:
-        key = getpass.getpass("  Enter your API key (hidden): ").strip()
-        if not key:
-            print("  [!] Cannot be empty. Try again.")
-            continue
-        if len(key) < 10:
-            print("  [!] Key too short. Try again.")
-            continue
-        if key.startswith("AIza"): name = "GEMINI_API_KEY"
-        elif key.startswith("gsk_"): name = "GROQ_API_KEY"
-        elif key.startswith("sk-ant"): name = "ANTHROPIC_API_KEY"
-        elif key.startswith("sk-"): name = "OPENAI_API_KEY"
-        else: name = "GEMINI_API_KEY"
-        ENV_FILE.touch(exist_ok=True)
-        set_key(str(ENV_FILE), name, key)
-        print(f"  [✅] Key saved securely to .env")
-        return key
+    saved_key = (
+        os.getenv("GEMINI_API_KEY") or
+        os.getenv("OPENAI_API_KEY") or
+        os.getenv("GROQ_API_KEY") or
+        os.getenv("ANTHROPIC_API_KEY") or ""
+    )
+    if saved_key and len(saved_key) > 10:
+        provider = "GEMINI" if saved_key.startswith("AIza") else \
+                   "GROQ" if saved_key.startswith("gsk_") else \
+                   "OPENAI" if saved_key.startswith("sk-") else "AI"
+        print(f"  API Key  : ✅ {provider} key found")
+    else:
+        print("  API Key  : ℹ️  No key found — running in free mode")
+        print("  (Optional) Get free key: aistudio.google.com")
+        print()
+        choice = input("  Add API key? (Y/N, default N): ").strip().lower()
+        if choice == "y":
+            api_key = getpass.getpass("  Paste key: ").strip()
+            if api_key and len(api_key) > 10:
+                if api_key.startswith("AIza"): name = "GEMINI_API_KEY"
+                elif api_key.startswith("gsk_"): name = "GROQ_API_KEY"
+                elif api_key.startswith("sk-ant"): name = "ANTHROPIC_API_KEY"
+                elif api_key.startswith("sk-"): name = "OPENAI_API_KEY"
+                else: name = "GEMINI_API_KEY"
+                ENV_FILE.touch(exist_ok=True)
+                set_key(str(ENV_FILE), name, api_key)
+                os.environ[name] = api_key
+                print(f"  ✅ Key saved")
+        else:
+            print("  ✅ Running in free mode — no API key needed")
 
 def ask_reference():
     print()
@@ -101,23 +102,30 @@ def ask_music():
     print("─"*55)
     print("  STEP 3 — Background Music")
     print("─"*55)
-    print("  Drag and drop your music file path here.")
-    print("  Supported: MP3, WAV, WEBM, M4A")
+    print("  Options:")
+    print("  [1] Auto-extract song from reference video")
+    print("  [2] Use my own music file")
+    print("  [3] No music")
     print()
-    while True:
-        path = input("  Music path: ").strip().strip('"').strip("'")
-        if not path:
-            print("  [!] Path cannot be empty. Try again.")
-            continue
-        if not os.path.exists(path):
-            print(f"  [!] File not found: {path}")
-            continue
-        if not path.lower().endswith((".mp3",".wav",".webm",".m4a",".ogg")):
-            print("  [!] Must be MP3, WAV, WEBM, M4A or OGG file.")
-            continue
-        size_mb = os.path.getsize(path) / (1024*1024)
-        print(f"  [✅] Music loaded: {os.path.basename(path)} ({size_mb:.1f}MB)")
-        return path
+    choice = input("  Choose (1/2/3): ").strip()
+
+    if choice == "1":
+        print("  [✅] Will auto-extract song from reference video")
+        return "AUTO"
+    elif choice == "3":
+        print("  [✅] No music")
+        return None
+    else:
+        while True:
+            path = input("  Music path: ").strip().strip('"').strip("'")
+            if not path:
+                continue
+            if not os.path.exists(path):
+                print(f"  [!] File not found: {path}")
+                continue
+            size_mb = os.path.getsize(path)/(1024*1024)
+            print(f"  [✅] Music: {os.path.basename(path)} ({size_mb:.1f}MB)")
+            return path
 
 def ask_duration():
     print()
@@ -130,9 +138,9 @@ def ask_duration():
     print("  [2] 1 minute    — YouTube Short")
     print("  [3] 3 minutes   — Standard Montage")
     print("  [4] 5 minutes   — Long Montage")
-    print("  [5] 10 minutes  — Full Highlight Reel")
+    print("  [5] 8 minutes   — Maximum Montage")
     print()
-    choices = {"1":30,"2":60,"3":180,"4":300,"5":600}
+    choices = {"1":30,"2":60,"3":180,"4":300,"5":480}
     while True:
         choice = input("  Choose (1-5): ").strip()
         if choice in choices:
@@ -166,7 +174,7 @@ def confirm(youtube, footage, music, duration, output):
     print("="*55)
     print(f"  Reference  : {youtube[:50]}")
     print(f"  Footage    : {os.path.basename(footage)}")
-    print(f"  Music      : {os.path.basename(music)}")
+    print(f"  Music      : {os.path.basename(music) if music else 'None'}")
     mins = duration // 60
     secs = duration % 60
     print(f"  Duration   : {mins}:{secs:02d}")
@@ -194,7 +202,7 @@ def run_agent(youtube, footage, music, duration, output):
         sys.executable, "agent.py",
         "--youtube", youtube,
         "--footage", os.path.dirname(footage),
-        "--music", music,
+        "--music", music if music else "NONE",
         "--output", output,
         "--duration", str(duration)
     ]
