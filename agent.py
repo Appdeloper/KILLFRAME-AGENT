@@ -14,14 +14,46 @@ import argparse
 import time
 from dotenv import load_dotenv
 
-# Auto-install missing packages
-required = ["moviepy", "opencv-python", "numpy", "librosa", "scipy", "yt-dlp", "python-dotenv", "google-generativeai", "openai", "groq", "anthropic", "requests"]
-for pkg in required:
-    try:
-        __import__(pkg.replace("-", "_"))
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "-q"])
-        print(f"[VOLTCUT] Installed: {pkg}")
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except:
+    pass
+
+import importlib
+
+def ensure_libraries():
+    required = {
+        "cv2": "opencv-python",
+        "numpy": "numpy",
+        "moviepy": "moviepy",
+        "librosa": "librosa",
+        "scipy": "scipy",
+        "yt_dlp": "yt-dlp",
+        "dotenv": "python-dotenv",
+        "google.generativeai": "google-generativeai",
+        "openai": "openai",
+        "groq": "groq",
+        "anthropic": "anthropic",
+        "requests": "requests",
+    }
+    missing = []
+    for module, package in required.items():
+        try:
+            importlib.import_module(module)
+        except ImportError:
+            missing.append(package)
+
+    if missing:
+        print(f"[VOLTCUT] Installing {len(missing)} missing packages: {', '.join(missing)}")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "-q", "--break-system-packages"] + missing
+        )
+        print(f"[VOLTCUT] ✅ All packages installed")
+    else:
+        print(f"[VOLTCUT] ✅ All packages already installed — skipping")
+
+ensure_libraries()
 
 load_dotenv()
 
