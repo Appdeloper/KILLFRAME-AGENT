@@ -157,6 +157,40 @@ That's it. Follow the prompts:
   Press ENTER → montage generated automatically
 ```
 
+---
+
+## 🎮 How To Use VOLTCUT-AGENT
+
+### Requirements
+- Python 3.10 or higher
+- FFmpeg installed (or use the one bundled with CapCut)
+
+### Installation
+```bash
+git clone https://github.com/Appdeloper/VOLTCUT-AGENT.git
+cd VOLTCUT-AGENT
+pip install -r requirements.txt
+```
+
+### Run It
+```bash
+python run.py
+```
+
+### What You'll Need
+| Input | What To Provide |
+|---|---|
+| **API Key** | Optional — skip with Enter, runs free |
+| **YouTube URL** | Any Free Fire montage to copy the editing style |
+| **Footage** | Your own raw Free Fire gameplay (MP4) |
+| **Music** | Any song (MP3/WAV) for beat sync |
+| **Duration** | Choose output length: 30s to 8min |
+
+### Output
+A professional montage video — kills synced to beats, color graded, with flash transitions — saved to your project folder and played automatically.
+
+No editing software required. No API key required. Completely free.
+
 ### 💀 Kill Detection — 7 Signal System
 VOLTCUT uses 7 simultaneous signals to find kills:
 - **Kill Feed**: Red pixels in top-right corner
